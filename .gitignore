@@ -38,6 +38,10 @@ Thumbs.db
 
 # Node.js相关
 node_modules/
+.worktrees/
+.superpowers/
+integrations/feishu/data/
+integrations/feishu/.env
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -282,4 +286,3 @@ scripts/wecom_chat_export/*.json
 scripts/wecom_chat_export/*.db
 scripts/wecom_chat_export/*.db-wal
 scripts/wecom_chat_export/*.db-shm
-
