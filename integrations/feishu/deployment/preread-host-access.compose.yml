@@ -1,0 +1,6 @@
+# Optional overlay for the existing standalone stack. Base compose stays untouched.
+# Use only when this Node service runs on the Windows host.
+services:
+  preread-api:
+    ports:
+      - "127.0.0.1:4382:3000"

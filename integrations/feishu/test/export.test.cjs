@@ -1,0 +1,14 @@
+const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const os=require('node:os');const path=require('node:path');const {createHash}=require('node:crypto');const {DatabaseSync}=require('node:sqlite');const {runWritingJob}=require('../writing.cjs');
+test('real Electron exports persisted synthetic content to a valid Word document without model calls',{timeout:60000},async t=>{
+ const clientRoot=path.resolve(__dirname,'../../../client');const electronPath=path.join(clientRoot,'node_modules/electron/dist',process.platform==='win32'?'electron.exe':'electron');if(!fs.existsSync(electronPath))return t.skip('Electron not installed');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'bid-export-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const sourcePath=path.join(root,'sources','synthetic.md');fs.mkdirSync(path.dirname(sourcePath),{recursive:true});fs.writeFileSync(sourcePath,'# 离线导出验收\n项目资料不足时保留待补项。');
+ const checksum=createHash('sha256').update(fs.readFileSync(sourcePath)).digest('hex');
+ const job={id:'export-test',projectId:'synthetic-project',companyId:'synthetic-company',confirmed:true,stage:'prepare',sourcePath,handoff:{schemaVersion:'1.0',task:{taskId:'synthetic-task',title:'离线导出验收'},snapshot:{documentVersion:'doc:1',reportVersion:'report:1',reportId:'r',checksum:'sha256:'+checksum,generatedAt:'2026-09-09T00:00:00Z'},latestDocumentVersion:'doc:1',superseded:false,status:'ready',requirements:[],warnings:[],evidence:[]}};
+ const args={root,electronPath,clientRoot,modelConfig:{provider:'custom',api_key:'offline-only',base_url:'http://127.0.0.1:1/v1',model_name:'no-model-call'},timeoutMs:15000};
+ const prepared=await runWritingJob({...args,job});assert.equal(prepared.status,'completed',JSON.stringify(prepared));
+ const db=new DatabaseSync(path.join(prepared.paths.workspace,'yibiao.sqlite'));const ts='2026-09-09T00:00:00Z';
+ db.prepare('INSERT INTO technical_plan_outline_nodes(node_id,parent_node_id,sort_order,level,title,description,content,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run('1',null,0,1,'实施方案','离线合成内容','本段为离线验收。项目经理：【待填写】。',ts,ts);
+ db.prepare('INSERT INTO technical_plan_tasks(type,task_id,status,progress,stats_json,error,pause_requested,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run('content-generation','synthetic-content','success',100,'{}',null,0,ts,ts);db.close();
+ const result=await runWritingJob({...args,job:{...job,stage:'export'}});assert.equal(result.status,'completed',JSON.stringify(result));assert.equal(result.stage,'export');assert.equal(result.artifacts.length,1);
+ const a=result.artifacts[0],bytes=fs.readFileSync(a.path);assert.equal(a.sha256,createHash('sha256').update(bytes).digest('hex'));const zip=await require(path.join(clientRoot,'node_modules/jszip')).loadAsync(bytes);const xml=await zip.file('word/document.xml').async('string');assert.match(xml,/实施方案/);assert.match(xml,/【待填写】/);
+});

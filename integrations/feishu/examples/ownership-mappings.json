@@ -1,0 +1,9 @@
+[
+  {
+    "recordId": "synthetic-record-1",
+    "companyId": "示例公司（非真实资料）",
+    "verified": false,
+    "updatedAt": "2026-09-09T00:00:00Z",
+    "attachments": [{"id": "synthetic-attachment-1", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "verified": false}]
+  }
+]

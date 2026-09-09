@@ -1,0 +1,12 @@
+[
+  {
+    "taskId": "synthetic-task-1",
+    "documentVersion": "document:1",
+    "checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "rules": [
+      {"requirementId": "qualification-1", "kind": "certificate", "certName": "示例证照", "minCount": 1},
+      {"requirementId": "performance-1", "kind": "performance", "category": "示例项目", "minAmount": 100000, "fromDate": "2023-01-01", "minCount": 2},
+      {"requirementId": "redline-1", "kind": "manual", "verified": false, "result": "unknown"}
+    ]
+  }
+]

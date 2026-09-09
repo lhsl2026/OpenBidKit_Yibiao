@@ -1,0 +1,1 @@
+{"name":"openbidkit-feishu","version":"0.1.0","private":true,"description":"Feishu tender decisions and isolated bid draft worker","engines":{"node":">=22.13.0"},"scripts":{"start":"node --env-file-if-exists=.env main.cjs","test":"node --test test/*.test.cjs"}}
