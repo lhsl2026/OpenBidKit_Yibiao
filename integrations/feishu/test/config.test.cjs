@@ -22,3 +22,9 @@ test('official document recovery is opt-in and pinned to the authorized Miaoda a
  for(const changed of [{BID_MIAODA_APP_ID:'app_other'},{BID_DOCUMENT_CLI_PROFILE:''},{PREREAD_RELAY_AUTHORIZATION:''}])assert.throws(()=>loadConfig({...env,...changed}),/document_recovery_not_configured/);
  assert.equal(loadConfig({}).documentRecovery.enabled,false);
 });
+test('company profile synchronization is opt-in and pinned to the exact legal entity',()=>{
+ const env={BID_COMPANY_PROFILE_SYNC_ENABLED:'true',BID_COMPANY_ID:'隆创信息有限公司',BID_VAULT_DATABASE:'C:/vault/vault.sqlite3',BID_VAULT_FILES:'C:/vault',BID_VAULT_MAPPINGS:'C:/vault/mappings.json',PREREAD_BASE_URL:'http://127.0.0.1:3000',PREREAD_RELAY_AUTHORIZATION:'Bearer relay'};
+ const config=loadConfig(env);assert.equal(config.companyEvidence.enabled,true);
+ for(const changed of [{BID_COMPANY_ID:'江苏隆创信息技术有限公司'},{BID_VAULT_DATABASE:''},{BID_VAULT_FILES:''},{BID_VAULT_MAPPINGS:''},{PREREAD_BASE_URL:''},{PREREAD_RELAY_AUTHORIZATION:''}])assert.throws(()=>loadConfig({...env,...changed}),/company_profile_sync_not_configured/);
+ assert.equal(loadConfig({}).companyEvidence.enabled,false);
+});

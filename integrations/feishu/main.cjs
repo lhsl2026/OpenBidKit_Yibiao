@@ -14,6 +14,7 @@ const { createDocumentRecovery } = require('./document-recovery.cjs');
 const { createReportArchive } = require('./report-archive.cjs');
 const { isSourceInboxActive } = require('./receipt.cjs');
 const { deadlineFrom, resolveDeadline } = require('./handoff-fields.cjs');
+const { buildCompanyEvidenceProfile, createCompanyEvidenceSync } = require('./company-evidence.cjs');
 
 function readEvidenceInWorker(config, { signal } = {}) {
   return new Promise((resolve, reject) => {
@@ -35,7 +36,7 @@ function readEvidenceInWorker(config, { signal } = {}) {
     worker.once('exit', () => { if (!settled) finish(Error('snapshot_unavailable')); });
   });
 }
-function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, codexBridgeFactory } = {}) {
+function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, codexBridgeFactory, prereadFactory = createPrereadClient } = {}) {
   const store = createStore(path.join(config.dataRoot, 'workflow.sqlite3'));
   const snapshotController = new AbortController();
   let snapshot = { records: [], warnings: ['vault_not_configured'] }, snapshotAt = 0, vaultReady = false, rules = [];
@@ -69,10 +70,13 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     if (closed) return Promise.resolve();
     if (refreshing) return refreshing;
     const startedAt = clock();
-    refreshing = Promise.resolve().then(() => readEvidence(config, { signal: snapshotController.signal })).then(value => {
+    refreshing = Promise.resolve().then(() => readEvidence(config, { signal: snapshotController.signal })).then(async value => {
       if (closed) return;
       if (!Array.isArray(value?.rules) || !Array.isArray(value?.snapshot?.records)) throw Error('snapshot_invalid');
       snapshot = value.snapshot; rules = value.rules; vaultReady = true; snapshotAt = startedAt;
+      if (companyEvidence) {
+        try { await companyEvidence.replace(buildCompanyEvidenceProfile(snapshot, { companyId: config.companyId })); } catch {}
+      }
       revalidateAll();
     }).catch(() => {
       if (closed) return;
@@ -81,7 +85,8 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     }).finally(() => { refreshing = null; });
     return refreshing;
   }
-  const preread = config.prereadUrl ? createPrereadClient({ baseUrl: config.prereadUrl, apiKey: config.prereadKey, relayAuthorization: config.relayAuthorization }) : null;
+  const preread = config.prereadUrl ? prereadFactory({ baseUrl: config.prereadUrl, apiKey: config.prereadKey, relayAuthorization: config.relayAuthorization }) : null;
+  const companyEvidence = config.companyEvidence?.enabled ? createCompanyEvidenceSync({ store, client: preread, companyId: config.companyId }) : null;
   const lark = config.appId && config.appSecret ? createLarkClient({ appId: config.appId, appSecret: config.appSecret }) : null;
   const write = (job, { signal } = {}) => require('./writing.cjs').runWritingJob({
     job, root: config.writingRoot, electronPath: config.electronPath, clientRoot: config.clientRoot,
@@ -108,6 +113,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     if (!config.apiKey) missing.push('internal_api_key');
     if (!fresh()) missing.push('vault');
     if (!config.mappingsPath) missing.push('ownership_mappings');
+    if (config.companyEvidence?.enabled && !companyEvidence?.status().ready) missing.push('company_profile');
     if (codexBridge ? !codexBridge.status().ready : !config.modelConfig.api_key || !config.modelConfig.model_name || !config.modelConfig.base_url) missing.push('model');
     if (!preread || !config.prereadKey || !config.relayAuthorization) missing.push('preread');
     if (!config.sourceChats.length || !config.sourceSenders.length) missing.push('radar_allowlist');
@@ -118,7 +124,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     return { ready: missing.length === 0, mode: config.mode, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
-  return { store, workflow, runner, cardSource, selection, documentRecovery, reportArchive, codexBridge, server, readiness, refreshEvidence,
+  return { store, workflow, runner, cardSource, selection, documentRecovery, reportArchive, companyEvidence, codexBridge, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;

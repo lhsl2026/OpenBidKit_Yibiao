@@ -1,3 +1,56 @@
+diff --git a/server/configure-production-app.spec.ts b/server/configure-production-app.spec.ts
+new file mode 100644
+index 0000000..a73750e
+--- /dev/null
++++ b/server/configure-production-app.spec.ts
+@@ -0,0 +1,16 @@
++import { configureProductionRequestBoundary } from './configure-production-app';
++
++describe('configureProductionRequestBoundary', () => {
++  it('installs one bounded JSON parser large enough for the company evidence snapshot', () => {
++    const parsers: Array<{ type: string; options: unknown }> = [];
++    const app = {
++      useGlobalPipes: jest.fn(),
++      useBodyParser: (type: string, options: unknown) => parsers.push({ type, options }),
++    };
++
++    configureProductionRequestBoundary(app as never);
++
++    expect(parsers).toContainEqual({ type: 'json', options: { limit: '1mb' } });
++    expect(parsers).toContainEqual({ type: 'urlencoded', options: { limit: '1mb', extended: true } });
++  });
++});
+diff --git a/server/configure-production-app.ts b/server/configure-production-app.ts
+index 73e95d9..f560ca3 100644
+--- a/server/configure-production-app.ts
++++ b/server/configure-production-app.ts
+@@ -2,10 +2,14 @@ import {
+   type INestApplication,
+   ValidationPipe,
+ } from '@nestjs/common';
++import type { NestExpressApplication } from '@nestjs/platform-express';
+ 
+ export const configureProductionRequestBoundary = (
+   app: INestApplication,
+ ): void => {
++  const expressApp = app as NestExpressApplication;
++  expressApp.useBodyParser('json', { limit: '1mb' });
++  expressApp.useBodyParser('urlencoded', { limit: '1mb', extended: true });
+   app.useGlobalPipes(
+     new ValidationPipe({
+       transform: true,
+diff --git a/server/main.ts b/server/main.ts
+index 916e6e7..b1d291e 100644
+--- a/server/main.ts
++++ b/server/main.ts
+@@ -12,6 +12,7 @@ import { resolveRuntimeMode } from './modules/runtime/runtime-mode';
+ async function bootstrap() {
+   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+     abortOnError: process.env.NODE_ENV !== 'development',
++    bodyParser: false,
+   });
+   configureProductionRequestBoundary(app);
+   await configureRuntimeApp(
 diff --git a/server/modules/preread/preread-bid-manager-report.ts b/server/modules/preread/preread-bid-manager-report.ts
 index 76cb432..f2837b4 100644
 --- a/server/modules/preread/preread-bid-manager-report.ts
