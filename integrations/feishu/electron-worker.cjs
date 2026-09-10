@@ -52,6 +52,7 @@ function readInput() {
 const input = readInput();
 const codexTextBackend = input.modelConfig?.backend === 'codex';
 const { createCodexWritingAdapter, createTextOnlyAgentService, textOnlyContentOptions, assertTextOnlyPlan, normalizeCodexModelConfig } = require('./codex-writing.cjs');
+const { selectContentStartPayload, isContentDecisionPending } = require('./electron-worker-state.cjs');
 app.disableHardwareAcceleration();
 app.setPath('userData', input.prepared.userData);
 app.setPath('downloads', input.prepared.artifacts);
@@ -456,7 +457,8 @@ async function contentStage(services) {
       consistencyRepairMode: 'normal',
     },
   };
-  if (state.contentGenerationTask?.status === 'paused' && state.contentGenerationTask?.stats?.content?.awaiting_content_decision === true) {
+  contentStartPayload = selectContentStartPayload(state, contentStartPayload);
+  if (isContentDecisionPending(state.contentGenerationTask)) {
     const waiting = contentDecisionResult(state);
     const decision = input.job?.confirmations?.contentDecision;
     if (!decision) return waiting;
@@ -475,7 +477,7 @@ async function contentStage(services) {
     taskService.startContentGeneration(contentStartPayload);
   });
   if (observed.task.status !== 'success') {
-    const waiting = observed.task.status === 'paused' && observed.task.stats?.content?.awaiting_content_decision === true;
+    const waiting = isContentDecisionPending(observed.task);
     if (waiting) {
       return contentDecisionResult(technicalPlanStore.loadTechnicalPlan());
     }

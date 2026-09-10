@@ -125,6 +125,15 @@ test('executor exceptions never expose error properties supplied by another modu
   const text = await response.text(); assert.ok(!text.includes('private_')); assert.ok(text.includes('execution_failed'));
 });
 
+test('persists an allowlisted executor diagnostic while keeping the HTTP error generic', async t => {
+  const f = await fixture(t, { run: async () => { throw Object.assign(Error('private diagnostic'), { code: 'codex_json_object_invalid' }); } });
+  const response = await f.post(payload('diagnostic'));
+  assert.equal(response.status, 502);
+  const text = await response.text(); assert.ok(!text.includes('codex_json_object_invalid')); assert.ok(text.includes('execution_failed'));
+  const record = JSON.parse(f.store.db.prepare("SELECT value FROM settings WHERE key LIKE 'codex-bridge-request:%'").get().value);
+  assert.equal(record.errorCode, 'codex_json_object_invalid');
+});
+
 test('body size and unavailable local auth fail before execution', async t => {
   const f = await fixture(t, { config: { maxRequestBytes: 128 } });
   assert.equal((await f.post(payload('x'.repeat(200)))).status, 413); assert.equal(f.calls(), 0);

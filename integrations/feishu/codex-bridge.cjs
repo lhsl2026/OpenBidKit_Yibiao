@@ -8,6 +8,13 @@ const AUTH_CACHE_MS = 60000;
 const AUTH_CLOSE_WAIT_MS = 10000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const INTERNAL_ERROR = Symbol('bridge_error');
+const SAFE_EXECUTOR_DIAGNOSTICS = new Set([
+  'codex_aborted', 'codex_cleanup_failed', 'codex_cli_failed', 'codex_event_invalid',
+  'codex_forbidden_item', 'codex_input_too_large', 'codex_json_object_invalid',
+  'codex_output_invalid', 'codex_output_too_large', 'codex_request_invalid',
+  'codex_spawn_failed', 'codex_stderr_too_large', 'codex_stdin_failed',
+  'codex_stdout_failed', 'codex_stdout_too_large', 'codex_timeout', 'codex_workspace_failed',
+]);
 const PREFIX = 'codex-bridge-request:';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const failure = (status, code) => Object.assign(new Error(code), { status, code, [INTERNAL_ERROR]: true });
@@ -111,7 +118,7 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
     const index = queue.indexOf(job); if (index >= 0) queue.splice(index, 1);
     jobs.delete(job.hash);
     try {
-      if (error) persist(job, { state: 'failed', errorCode: error.code ?? 'execution_failed', updatedAt: clock() });
+      if (error) persist(job, { state: 'failed', errorCode: error.diagnosticCode ?? error.code ?? 'execution_failed', updatedAt: clock() });
       else persist(job, { state: 'completed', content, createdAt: job.createdAt, completedAt: clock(), expiresAt: clock() + CACHE_MS });
     } catch { error = failure(503, 'ownership_or_storage_lost'); }
     if (error) job.reject(error);
@@ -137,7 +144,14 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
         const issue = contentIssue(content, job.payload.responseFormat);
         if (issue) throw failure(502, issue);
         finish(job, null, content);
-      } catch (error) { finish(job, error?.[INTERNAL_ERROR] ? error : failure(502, 'execution_failed')); }
+      } catch (error) {
+        if (error?.[INTERNAL_ERROR]) finish(job, error);
+        else {
+          const wrapped = failure(502, 'execution_failed');
+          wrapped.diagnosticCode = SAFE_EXECUTOR_DIAGNOSTICS.has(error?.code) ? error.code : 'execution_failed';
+          finish(job, wrapped);
+        }
+      }
       finally { active = null; queueMicrotask(pump); }
     })();
     executions.add(execution); execution.finally(() => executions.delete(execution));

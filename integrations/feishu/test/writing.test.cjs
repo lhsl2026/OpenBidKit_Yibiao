@@ -374,4 +374,31 @@ test('content stage waits on the current outline challenge without changing the 
   assert.equal(pausedResult.code, 'content_decision_required');
   assert.deepEqual(pausedResult.confirmation.actions, ['retry_failed']);
   assert.deepEqual(pausedResult.confirmation.failedSections, [{ id: '1', title: '技术方案', error: '缺少可核验参数' }]);
+
+  const decisionDatabase = new DatabaseSync(path.join(prepared.paths.workspace, 'yibiao.sqlite'));
+  decisionDatabase.prepare(`UPDATE technical_plan_tasks
+    SET status=?, stats_json=?, error=?, updated_at=? WHERE type='content-generation'`).run(
+    'error',
+    JSON.stringify({ content: { phase: 'generating', awaiting_content_decision: true } }),
+    '正文小节生成结束，1 个小节失败或未完成。',
+    timestamp,
+  );
+  decisionDatabase.close();
+  const decisionResult = await runWritingJob({
+    job: {
+      ...base,
+      stage: 'content',
+      confirmations: {
+        outlineApproval: { challenge: outlineResult.confirmation.challenge, approved: true },
+      },
+    },
+    root: workspaceRoot,
+    electronPath,
+    clientRoot,
+    modelConfig,
+    timeoutMs: 10_000,
+  });
+  assert.equal(decisionResult.status, 'waiting_confirmation', JSON.stringify(decisionResult));
+  assert.equal(decisionResult.code, 'content_decision_required');
+  assert.deepEqual(decisionResult.confirmation.failedSections, [{ id: '1', title: '技术方案', error: '缺少可核验参数' }]);
 });
