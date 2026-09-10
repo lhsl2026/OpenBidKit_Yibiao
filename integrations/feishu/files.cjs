@@ -13,7 +13,7 @@ function enqueueArtifacts(store,projectId,result,root){
  for(const a of result.artifacts??[])if(a.path&&a.sha256)store.enqueueFile(projectId,a.path,a.sha256,epoch);
 }
 async function deliverFiles({store,client,root,mode,chatId,allowedChats=[],clock=Date.now,assertOwnership=()=>{},revalidate=id=>store.getProject(id)}){
- if(mode!=='test'||!allowedChats.includes(chatId))return;
+ if(!['test','production'].includes(mode)||!allowedChats.includes(chatId))return;
  for(const row of store.listFiles(clock())){
   assertOwnership();let p=revalidate(row.project_id);
   const valid=()=>{

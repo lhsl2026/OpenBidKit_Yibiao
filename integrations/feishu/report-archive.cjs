@@ -29,7 +29,7 @@ function createReportArchive({store,config,preread,client,assertOwnership=()=>{}
  const options=config.reportArchive??{enabled:false};let running=false;
  const root=path.resolve(options.root??path.join(config.dataRoot,'reports'));
  const list=()=>store.db.prepare("SELECT value FROM settings WHERE key LIKE 'report-archive-job:%' ORDER BY key").all().map(row=>JSON.parse(row.value));
- const allowed=()=>options.enabled&&config.mode==='test'&&config.chatId&&config.allowedChats?.includes(config.chatId)&&validToken(options.folderToken)&&options.allowedFolderTokens?.includes(options.folderToken);
+ const allowed=()=>options.enabled&&['test','production'].includes(config.mode)&&config.chatId&&config.allowedChats?.includes(config.chatId)&&validToken(options.folderToken)&&options.allowedFolderTokens?.includes(options.folderToken);
  if(options.enabled&&(!path.isAbsolute(options.cliPath??'')||!options.profile||!['bot','user'].includes(options.identity)||!allowed()||!preread))throw Error('report_archive_not_configured');
  const target=()=>key(options.profile,options.identity,options.folderToken,config.chatId);
  const save=job=>store.set(PREFIX+job.id,{...job,updatedAt:clock()});

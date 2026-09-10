@@ -1,4 +1,17 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');const {internalHost,loadConfig}=require('../config.cjs');
+function productionEnv(overrides={}){
+ return {
+  BID_DELIVERY_MODE:'production',BID_PRODUCTION_CUTOVER:'true',BID_CHAT_ID:'oc_test',BID_TEST_CHAT_IDS:'oc_test',
+  BID_PRODUCTION_CHAT_ID:'oc_production',BID_PRODUCTION_CHAT_IDS:'oc_production',BID_COMPANY_ID:'隆创信息有限公司',
+  LARK_APP_ID:'cli_app',LARK_APP_SECRET:'test-secret',BID_OPERATOR_IDS:'ou_operator',BID_SOURCE_CHAT_IDS:'oc_radar',BID_SOURCE_SENDER_IDS:'ou_radar_bot',
+  BID_RADAR_POLL_ENABLED:'true',BID_CARD_SOURCE_ENABLED:'true',BID_LARK_CLI_PATH:process.execPath,BID_LARK_CLI_PROFILE:'radar-user',BID_CARD_CLI_PROFILE:'bid-bot',
+  BID_REPORT_ARCHIVE_ENABLED:'true',BID_REPORT_FOLDER_TOKEN:'folder-production',BID_REPORT_ALLOWED_FOLDER_TOKENS:'folder-production',BID_REPORT_CLI_PROFILE:'report-user',BID_REPORT_CLI_IDENTITY:'user',
+  BID_COMPANY_PROFILE_SYNC_ENABLED:'true',BID_VAULT_DATABASE:'C:/vault/vault.sqlite3',BID_VAULT_FILES:'C:/vault',BID_VAULT_MAPPINGS:'C:/vault/mappings.json',
+  PREREAD_BASE_URL:'http://127.0.0.1:3000',PREREAD_RELAY_AUTHORIZATION:'Bearer relay',
+  MODEL_PROVIDER:'custom',MODEL_PROVIDER_API_KEY:'test-model-key',MODEL_PROVIDER_BASE_URL:'https://model.example/v1',MODEL_PROVIDER_MODEL:'test-model',
+  ...overrides,
+ };
+}
 test('private-looking public names are not internal IP addresses',()=>{
  for(const h of ['10.evil.example','127.0.0.1.example','192.168.example','172.16.example']){assert.equal(internalHost(h),false);assert.throws(()=>loadConfig({PREREAD_BASE_URL:'https://'+h}),/internal/);}
  for(const h of ['10.1.2.3','127.0.0.1','192.168.1.2','172.16.0.1','localhost','preread','[::1]'])assert.equal(internalHost(h),true);
@@ -27,4 +40,27 @@ test('company profile synchronization is opt-in and pinned to the exact legal en
  const config=loadConfig(env);assert.equal(config.companyEvidence.enabled,true);
  for(const changed of [{BID_COMPANY_ID:'江苏隆创信息技术有限公司'},{BID_VAULT_DATABASE:''},{BID_VAULT_FILES:''},{BID_VAULT_MAPPINGS:''},{PREREAD_BASE_URL:''},{PREREAD_RELAY_AUTHORIZATION:''}])assert.throws(()=>loadConfig({...env,...changed}),/company_profile_sync_not_configured/);
  assert.equal(loadConfig({}).companyEvidence.enabled,false);
+});
+test('production delivery selects only its explicit allowlist after every readiness gate is configured',()=>{
+ const config=loadConfig(productionEnv());
+ assert.equal(config.mode,'production');
+ assert.equal(config.chatId,'oc_production');
+ assert.deepEqual(config.allowedChats,['oc_production']);
+ assert.deepEqual(config.testDelivery,{chatId:'oc_test',allowedChats:['oc_test']});
+ assert.deepEqual(config.production,{cutover:true,chatId:'oc_production',allowedChats:['oc_production']});
+});
+test('production and test targets cannot overlap or activate without an explicit cutover',()=>{
+ for(const changed of [
+  {BID_PRODUCTION_CUTOVER:'false'},
+  {BID_PRODUCTION_CHAT_IDS:'oc_other'},
+  {BID_PRODUCTION_CHAT_ID:'oc_test'},
+  {BID_PRODUCTION_CHAT_IDS:'oc_production,oc_test'},
+  {BID_CARD_SOURCE_ENABLED:'false'},
+  {BID_RADAR_POLL_ENABLED:'false'},
+  {BID_REPORT_ARCHIVE_ENABLED:'false'},
+  {BID_COMPANY_PROFILE_SYNC_ENABLED:'false'},
+ ]) assert.throws(()=>loadConfig(productionEnv(changed)),/production/);
+ assert.throws(()=>loadConfig(productionEnv({BID_DELIVERY_MODE:'test'})),/production/);
+ const staged=loadConfig(productionEnv({BID_DELIVERY_MODE:'test',BID_PRODUCTION_CUTOVER:'false'}));
+ assert.equal(staged.chatId,'oc_test');assert.deepEqual(staged.allowedChats,['oc_test']);
 });

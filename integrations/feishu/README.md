@@ -49,7 +49,9 @@ npm.cmd start
 | `LARK_VERIFICATION_TOKEN` / `LARK_ENCRYPT_KEY` | 卡片事件验签与解密 |
 | `BID_OPERATOR_IDS` | 可做判标和编写确认的员工 open_id 白名单 |
 | `BID_CHAT_ID` / `BID_TEST_CHAT_IDS` | 唯一结果群，且必须包含于测试群白名单 |
-| `BID_DELIVERY_MODE` | 默认 `disabled`；完成测试环境配置后设为 `test` |
+| `BID_DELIVERY_MODE` | 默认 `disabled`；联调使用 `test`，正式门禁通过后才使用 `production` |
+| `BID_PRODUCTION_CHAT_ID` / `BID_PRODUCTION_CHAT_IDS` | 与测试群完全分离的正式目标及白名单；预发布时可先填写 |
+| `BID_PRODUCTION_CUTOVER` | 正式切流开关；只有 `production` 模式允许设为 `true` |
 | `MODEL_PROVIDER` | 易标模型 provider，OpenAI 兼容自定义接口可用 `custom` |
 | `MODEL_PROVIDER_BASE_URL` / `MODEL_PROVIDER_API_KEY` / `MODEL_PROVIDER_MODEL` | 易标文本模型地址、凭证及模型名 |
 | `BID_SUMMARY_HOUR` | 北京时间每日摘要小时，默认 18 |
@@ -131,4 +133,4 @@ SQLite WAL 持久保存项目、决策、回调去重、雷达收件箱、任务
 
 `npm test` 包含真实 SQLite、临时文件、签名回调、假预读和假飞书 HTTP 的全链路测试，以及已安装 Electron 时的真实隔离导入 smoke。假 HTTP/模型结果仅用于离线验证，不能算作真实群或真实 AI 验收。
 
-正式启用前需完成已有预读服务恢复、雷达转发绑定、模型连通性、台账逐条归属核实、机器人入群及卡片回调配置，并在明确的测试群用一份真实完整招标文件验收。当前版本仅开放 disabled/test 投递模式；代码通过测试不表示生产已切流。
+正式启用前需完成已有预读服务恢复、雷达转发绑定、模型连通性、台账逐条归属核实、机器人入群及卡片回调配置，并在明确的测试群用一份真实完整招标文件验收。生产模式还要求独立正式群白名单、显式切流开关和 `deployment/production-check.cjs` 全部通过；代码通过测试不表示生产已切流。

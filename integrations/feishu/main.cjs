@@ -119,9 +119,16 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     if (!config.sourceChats.length || !config.sourceSenders.length) missing.push('radar_allowlist');
     if (config.radarPolling?.enabled && config.sourceChats.some(chat=>{const s=store.get('radar-source:'+chat);return !s?.lastSuccessAt||s.error||clock()-s.lastSuccessAt>300000;})) missing.push('radar_source');
     if (!config.operatorIds.length || (config.cardSource?.enabled ? !cardSource.status().ready : !config.verificationToken || !config.encryptKey)) missing.push('card_callback');
-    if (config.mode !== 'test') missing.push('test_delivery');
+    const delivery = config.mode === 'production'
+      ? { target: 'production', configured: Boolean(config.production?.cutover && config.chatId === config.production.chatId && config.allowedChats?.includes(config.chatId)) }
+      : config.mode === 'test'
+        ? { target: 'test', configured: Boolean(config.chatId && config.allowedChats?.includes(config.chatId)) }
+        : { target: 'disabled', configured: false };
+    if (config.mode === 'production' && !delivery.configured) missing.push('production_delivery');
+    else if (config.mode === 'test' && !delivery.configured) missing.push('test_delivery');
+    else if (config.mode === 'disabled') missing.push('delivery_disabled');
     try { assertRuntime(); } catch { missing.push('service_ownership'); }
-    return { ready: missing.length === 0, mode: config.mode, missing };
+    return { ready: missing.length === 0, mode: config.mode, delivery, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
   return { store, workflow, runner, cardSource, selection, documentRecovery, reportArchive, companyEvidence, codexBridge, server, readiness, refreshEvidence,

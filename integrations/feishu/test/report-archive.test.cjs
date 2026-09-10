@@ -56,6 +56,9 @@ test('new report content creates a new version and immediately removes the previ
 test('unauthorized targets and disabled delivery never publish',async t=>{
  const x=setup(t);x.config.mode='disabled';await x.tick();assert.equal(x.calls.import,0);x.config.mode='test';x.config.reportArchive.allowedFolderTokens=[];await x.tick();assert.equal(x.calls.import,0);
 });
+test('production archives use the active formal target and approved folder',async t=>{
+ const x=setup(t);x.config.mode='production';await x.tick();assert.equal(x.calls.import,1);assert.equal(x.archive.list()[0].chatId,'oc_target');
+});
 test('permission failure retains imported doc and never exposes its URL',async t=>{
  const x=setup(t);x.client.hasGroup=async()=>false;await x.tick(4);assert.equal(x.calls.import,1);assert.equal(x.calls.grant,1);assert.equal(x.archive.list()[0].stage,'manual');assert.equal(x.store.getProject('project').input.reportUrl,undefined);
 });

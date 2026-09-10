@@ -83,6 +83,25 @@ Get-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'
 
 `-StartDocker` 适用于本机预读依赖 Docker Desktop 的部署：先隐藏启动已安装的官方 Docker Desktop，再启动服务；既有容器按照其 restart policy 恢复，预读连接暂不可用时收件箱保留重试。本选项不修改 Docker 的全局自动启动设置，远程预读部署可省略。注销、主机关机或休眠期间不能保证运行；全天无人值守需要迁移到常开主机。
 
+## 生产切流检查
+
+先在 `.env` 中填写 `BID_PRODUCTION_CHAT_ID` 与 `BID_PRODUCTION_CHAT_IDS`，保持 `BID_DELIVERY_MODE=test` 和 `BID_PRODUCTION_CUTOVER=false`。正式群必须是当前企业自建应用可加入的内部群，并与测试群完全分离。执行只读预检：
+
+```powershell
+node --env-file-if-exists=.env ./deployment/production-check.cjs
+```
+
+预检依次确认生产配置、机器人可见正式群、操作人员成员关系、雷达来源群、报告归档目录、当前 `/ready` 运行组件以及 Windows 常开任务。输出只包含固定检查名和诊断码，不打印群 ID、人员 ID、目录 token 或凭证。全部通过后，才同时设置 `BID_DELIVERY_MODE=production` 与 `BID_PRODUCTION_CUTOVER=true` 并重启服务。
+
+默认安装器使用 `Interactive + AtLogOn`，适合当前用户保持登录且机器不休眠的场景。它不满足注销后的常开要求。需要在同一 Windows 账户下随系统启动时，由账户持有人在本机凭证窗口中运行：
+
+```powershell
+$credential = Get-Credential
+./deployment/Install-FeishuUnattendedTask.ps1 -Credential $credential -NodePath 'C:/Program Files/nodejs/node.exe'
+```
+
+脚本只接受当前 Windows 用户，确保 Codex 与飞书授权仍从同一用户目录读取；任务使用 `Password + AtStartup`，密码只交给 Windows 任务计划程序，不写入参数、`.env` 或日志。若预读依赖本机 Docker Desktop，可加 `-StartDocker`，但仍须在重启后用 `production-check.cjs` 实测预读服务已恢复。休眠和关机期间无法接收；需要真正不间断运行时，应迁移到不会休眠的常开 Windows 主机或服务器。
+
 停止当前服务用 `Stop-Feishu.ps1`；暂停下次登录启动用 `Disable-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'`。恢复使用 `Enable-ScheduledTask`。凭证内容不放入命令行参数。
 
 ## 本次验证及环境现象

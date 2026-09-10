@@ -12,7 +12,7 @@ function createLarkClient({appId,appSecret,fetchImpl=fetch}){
   };
 }
 async function deliverOutbox({store,client,mode,chatId,allowedChats=[],clock=Date.now,assertOwnership=()=>{},revalidate=id=>store.getProject(id)}){
-  if(mode!=='test'||!chatId||!allowedChats.includes(chatId))return;
+  if(!['test','production'].includes(mode)||!chatId||!allowedChats.includes(chatId))return;
   for(const row of store.listOutbox(clock())){
     assertOwnership();
     const p=row.project_id?revalidate(row.project_id):null;

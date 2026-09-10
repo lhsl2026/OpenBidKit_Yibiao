@@ -16,6 +16,15 @@ test('HTTP callback readiness still requires verification and encryption when WS
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'bid-card-http-'));const config={...loadConfig({BID_DATA_ROOT:dir,BID_OPERATOR_IDS:'ou_actor'}),port:0};const app=createApplication(config);t.after(async()=>{await app.close();fs.rmSync(dir,{recursive:true,force:true});});
  assert.ok(app.readiness().missing.includes('card_callback'));config.verificationToken='token';config.encryptKey='encrypt';assert.equal(app.readiness().missing.includes('card_callback'),false);
 });
+test('readiness reports the active production delivery gate instead of a test-only error',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'bid-production-ready-'));
+ const base=loadConfig({BID_DATA_ROOT:dir,BID_COMPANY_ID:'隆创信息有限公司',BID_API_KEY:'x'.repeat(32)});
+ const config={...base,mode:'production',chatId:'oc_production',allowedChats:['oc_production'],production:{cutover:true,chatId:'oc_production',allowedChats:['oc_production']},port:0};
+ const app=createApplication(config);t.after(async()=>{await app.close();fs.rmSync(dir,{recursive:true,force:true});});
+ const ready=app.readiness();assert.equal(ready.mode,'production');assert.deepEqual(ready.delivery,{target:'production',configured:true});
+ assert.equal(ready.missing.includes('test_delivery'),false);assert.equal(ready.missing.includes('production_delivery'),false);
+ config.production.cutover=false;assert.equal(app.readiness().missing.includes('production_delivery'),true);assert.equal(app.readiness().delivery.configured,false);
+});
 test('recovered local source binds to matching handoff digest and a mismatch stays blocked',async t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'bid-source-match-'));const app=createApplication({...loadConfig({BID_DATA_ROOT:dir,BID_COMPANY_ID:'company'}),port:0});t.after(async()=>{await app.close();fs.rmSync(dir,{recursive:true,force:true});});
  const sha='a'.repeat(64),sourcePath=path.join(dir,'writing','sources','source.pdf');app.store.set('document-source:task',{sourcePath,sha256:sha});

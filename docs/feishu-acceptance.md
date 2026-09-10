@@ -36,7 +36,13 @@
 
 消费者最终 5 套聚焦测试 207/207 通过，Nest 构建与补丁反向应用校验通过；实际缓存回放和群内回读独立完成。Task 3 收口后的 OpenBid 完整套件 248 项：247 通过、0 失败、1 项因缺少本地公开包跳过，包含真实隔离 Electron、断点恢复和 DOCX 导出。客户端 `tsc --noEmit && vite build` 通过；首次打包因 Windows 提交内存不足退出，临时停止 Docker 并限制 esbuild 并发后完整构建成功，随后 Docker、全部预读容器和主服务健康均已恢复。生产 Worker 的单阶段上限仍为 30 分钟。
 
+Task 4 收口验证扩展为 259 项：258 通过、0 失败、1 项因缺少本地公开包跳过。新增用例覆盖生产/测试群隔离、显式切流、production 卡片与 DOCX 投递、报告归档、运行 readiness、正式群/成员/来源群/归档目录只读诊断以及外部群拒绝。客户端再次完成 `tsc --noEmit && vite build`；首次构建仍因 Windows 提交内存不足失败，临时停止 Docker Desktop 后成功，随后恢复 9 个容器，其中有健康检查的 8 个均为 healthy，主服务 `/ready` 返回 test/已配置/无缺项。
+
 主运行目录由 `\OpenBidKitFeishu` 登录任务监管，使用现有 PowerShell 7 RemoteSigned 配置，未修改系统执行策略。主服务 `127.0.0.1:4381`、桥接 `127.0.0.1:4383` 实测 ready 200。仅在当前用户登录且电脑运行时持续接收；关机、注销、休眠期间不保证服务。
+
+2026-09-10 生产预发布已建立独立内部群“隆创投标决策群”，当前用户为群主，专用判标应用已入群；正式群 ID 只写入忽略的本机 `.env`，与测试群无重叠。生产配置保持 `BID_DELIVERY_MODE=test`、`BID_PRODUCTION_CUTOVER=false`，未发送上线卡。只读 `production-check.cjs` 的生产配置、正式群、操作人、雷达来源、报告目录和运行组件 6 项通过；计划任务仍为 `Interactive + AtLogOn`，以 `interactive_logon_only` 阻止切流。服务重启后 `/ready` 返回 `mode=test`、`delivery.target=test`、`configured=true`。
+
+已提供 `Install-FeishuUnattendedTask.ps1`，可由当前 Windows 账户持有人通过系统凭证窗口安装 `Password + AtStartup` 任务。凭证不会写入命令行、`.env` 或日志。安装后还必须实测 Docker 预读栈、Codex 和飞书 CLI 在未登录桌面下恢复；在该项通过前不能宣称全天无人值守，也不能切换正式群。
 
 真实写标验收在 30 分钟单阶段超时后保留 46/48 正文，通过持久化 `resume` 恢复另一个中断小节；最后一个模型失败小节经独立、显式 attempt 重试成功。最终 SQLite 任务为 success/100%，48 个小节全部 success；DOCX 和飞书文件回读独立复核通过。验收稿标题和正文均标注“真实文件流程验收稿，不代表公司决定投标”，不构成公司投标决定或完整投标文件。
 
