@@ -25,7 +25,7 @@ function loadConfig(env=process.env){
  if(config.codexBridge.enabled){
   const c=config.codexBridge;
   if(!path.isAbsolute(c.executable)||c.apiKey.length<32||!Number.isInteger(c.port)||c.port<1||c.port>65535||c.port===config.port||!Number.isInteger(c.timeoutMs)||c.timeoutMs<1000||c.timeoutMs>300000||!/^[A-Za-z0-9._-]{1,128}$/.test(c.model))throw Error('codex_bridge_not_configured');
-  config.modelConfig={provider:'openai',base_url:'http://127.0.0.1:'+c.port+'/v1',api_key:c.apiKey,model_name:c.model};
+  config.modelConfig={provider:'custom',backend:'codex',base_url:'http://127.0.0.1:'+c.port+'/v1',api_key:c.apiKey,model_name:c.model};
  }
  return config;
 }

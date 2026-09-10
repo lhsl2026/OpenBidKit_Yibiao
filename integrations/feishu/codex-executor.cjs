@@ -41,6 +41,14 @@ const OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 const ALLOWED_ITEM_TYPES = new Set(['reasoning', 'agent_message']);
+const CHILD_ENVIRONMENT_KEYS = new Set([
+  'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATH', 'PATHEXT',
+  'TEMP', 'TMP', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'HOME',
+  'APPDATA', 'LOCALAPPDATA', 'CODEX_HOME',
+  'LANG', 'LC_ALL', 'LC_CTYPE',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS',
+]);
 
 function failure(code) {
   const error = new Error(code);
@@ -54,6 +62,10 @@ function fail(code) {
 
 function positiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
+}
+
+function childEnvironment(source = process.env) {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => CHILD_ENVIRONMENT_KEYS.has(key.toUpperCase())));
 }
 
 function validateOptions(options) {
@@ -151,6 +163,7 @@ function runProcess({ config, args, cwd, input, signal, spawnImpl }) {
     try {
       child = spawnImpl(config.executable, args, {
         cwd,
+        env: childEnvironment(),
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -286,6 +299,7 @@ function createCodexExecutor(options, { spawnImpl = spawn } = {}) {
         fs.mkdirSync(config.root, { recursive: true });
         child = spawnImpl(config.executable, ['login', 'status'], {
           cwd: config.root,
+          env: childEnvironment(),
           windowsHide: true,
           stdio: ['ignore', 'ignore', 'ignore'],
         });

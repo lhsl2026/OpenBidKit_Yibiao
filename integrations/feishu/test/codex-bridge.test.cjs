@@ -162,6 +162,23 @@ test('async login probes are cached and singleflight; status never spawns a prob
   await f.bridge.close(); assert.equal(f.bridge.status().ready, false); assert.equal(probes, 2);
 });
 
+test('close waits for an auth refresh already in flight', async t => {
+  let now = 1000, probes = 0;
+  const gate = deferred();
+  const f = await fixture(t, { clock: () => now, executor: { authStatus: async () => { probes++; return probes === 1 ? true : gate.promise; } } });
+  now += 60001;
+  const request = f.post(payload('auth-close')).catch(() => null);
+  await until(() => probes === 2);
+  let closed = false;
+  const closing = f.bridge.close().then(() => { closed = true; });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(closed, false);
+  gate.resolve(false);
+  await closing;
+  await request;
+  assert.equal(closed, true);
+});
+
 test('oversized executor output is rejected and is not saved as a successful completion', async t => {
   const f = await fixture(t, { run: async () => 'x'.repeat(2 * 1024 * 1024 + 1) });
   const response = await f.post(payload()); assert.equal(response.status, 502);

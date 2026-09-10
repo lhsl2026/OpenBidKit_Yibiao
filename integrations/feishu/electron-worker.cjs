@@ -50,6 +50,8 @@ function readInput() {
 }
 
 const input = readInput();
+const codexTextBackend = input.modelConfig?.backend === 'codex';
+const { createCodexWritingAdapter, createTextOnlyAgentService, textOnlyContentOptions, assertTextOnlyPlan, normalizeCodexModelConfig } = require('./codex-writing.cjs');
 app.disableHardwareAcceleration();
 app.setPath('userData', input.prepared.userData);
 app.setPath('downloads', input.prepared.artifacts);
@@ -60,6 +62,7 @@ function requireService(relativePath) {
 }
 
 function normalizeModelConfig(modelConfig) {
+  if (codexTextBackend) return normalizeCodexModelConfig(modelConfig);
   const provider = String(modelConfig.text_model_provider || modelConfig.provider || 'custom').trim();
   const profile = modelConfig.text_model_profiles?.[provider] || modelConfig;
   return {
@@ -101,7 +104,7 @@ function createServices() {
   const licenseService = createLicenseService({ app, configStore });
   const aiService = createAiService({ app, configStore });
   const autoConfirmationService = createAutoConfirmationService({ configStore });
-  const agentService = createAgentService({ app, configStore, aiService, licenseService, autoConfirmationService });
+  const agentService = codexTextBackend ? createTextOnlyAgentService() : createAgentService({ app, configStore, aiService, licenseService, autoConfirmationService });
   const fileService = createFileService({ app, configStore });
   const openXmlHelperService = createOpenXmlHelperService({ app, configStore });
   const sqliteDatabase = createSqliteDatabase(app);
@@ -129,6 +132,7 @@ function createServices() {
     configStore,
     technicalPlanStore,
     taskService,
+    codexWriting: codexTextBackend ? createCodexWritingAdapter({ aiService, workspaceStore: technicalPlanStore, knowledgeBaseService, runGlobalFactsTask: requireService('globalFactsTask.cjs').runGlobalFactsTask }) : null,
     async close() {
       await agentService.close?.();
       autoConfirmationService.close?.();
@@ -198,6 +202,7 @@ async function prepareStage(services) {
     projectOverview,
     techRequirements: renderRequirements(input.job.handoff),
     globalFactsMode: 'placeholder',
+    ...(codexTextBackend && input.job?.project?.wordControlOptions ? { outlineWordControlOptions: input.job.project.wordControlOptions } : {}),
   });
   state = technicalPlanStore.loadTechnicalPlan();
   return baseResult('completed', 'prepare', {
@@ -293,6 +298,10 @@ async function outlineStage(services) {
     if (!selectedIds.length || selectedIds.some((id) => !allowedIds.has(id))) {
       return baseResult('failed', 'outline', { code: 'invalid_outline_selection', message: '目录选择无效' });
     }
+    if (services.codexWriting) {
+      await services.codexWriting.expandOutline(selectedIds);
+      return outlineApprovalResult(technicalPlanStore.loadTechnicalPlan().outlineData);
+    }
     taskService.confirmOutlineSelection({
       taskId: state.outlineGenerationTask.task_id,
       items: pendingSelection.items,
@@ -300,6 +309,10 @@ async function outlineStage(services) {
     });
   }
 
+  if (services.codexWriting) {
+    await services.codexWriting.generateInitialOutline();
+    return outlineSelectionResult(technicalPlanStore.loadTechnicalPlan().outlineGenerationTask);
+  }
   const observed = await observeTask(taskService, 'outline-generation', () => {
     state = technicalPlanStore.loadTechnicalPlan();
     taskService.startOutlineGeneration({
@@ -401,11 +414,15 @@ async function contentStage(services) {
 
   technicalPlanStore.saveGlobalFactsConfig({ globalFactsMode: 'placeholder' });
   if (state.globalFactsTask?.status !== 'success' || !state.globalFacts?.length) {
-    const observed = await observeTask(taskService, 'global-facts-generation', () => {
-      taskService.startGlobalFactsGeneration({ globalFactsMode: 'placeholder' });
-    });
-    if (observed.task.status !== 'success') {
-      return baseResult('failed', 'content', { code: 'global_facts_generation_failed', message: observed.task.error || '全局事实生成失败' });
+    if (services.codexWriting) {
+      await services.codexWriting.generateFacts();
+    } else {
+      const observed = await observeTask(taskService, 'global-facts-generation', () => {
+        taskService.startGlobalFactsGeneration({ globalFactsMode: 'placeholder' });
+      });
+      if (observed.task.status !== 'success') {
+        return baseResult('failed', 'content', { code: 'global_facts_generation_failed', message: observed.task.error || '全局事实生成失败' });
+      }
     }
     state = technicalPlanStore.loadTechnicalPlan();
   }
@@ -447,6 +464,12 @@ async function contentStage(services) {
       return baseResult('failed', 'content', { code: 'stale_confirmation', message: '正文重试确认已过期或无效' });
     }
     contentStartPayload = { retryFailedSections: true };
+  }
+  if (services.codexWriting) {
+    assertTextOnlyPlan(state);
+    const generationOptions = textOnlyContentOptions(contentStartPayload.generationOptions || state.contentGenerationOptions);
+    technicalPlanStore.updateTechnicalPlan({ contentGenerationOptions: generationOptions });
+    contentStartPayload = { ...contentStartPayload, generationOptions };
   }
   const observed = await observeTask(taskService, 'content-generation', () => {
     taskService.startContentGeneration(contentStartPayload);

@@ -3,7 +3,7 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {loadConfig}=require('../config.cjs');const {createApplication}=require('../main.cjs');
 const env={BID_MODEL_BACKEND:'codex',BID_CODEX_EXECUTABLE:process.execPath,BID_CODEX_TOKEN:'b'.repeat(48),BID_CODEX_MODEL:'gpt-6-astra'};
 test('Codex backend derives local model settings without a vendor API key',()=>{
- const c=loadConfig(env);assert.equal(c.codexBridge.enabled,true);assert.equal(c.codexBridge.host,'127.0.0.1');
+ const c=loadConfig(env);assert.equal(c.codexBridge.enabled,true);assert.equal(c.codexBridge.host,'127.0.0.1');assert.equal(c.modelConfig.backend,'codex');assert.equal(c.modelConfig.provider,'custom');
  assert.equal(c.modelConfig.base_url,'http://127.0.0.1:4383/v1');assert.equal(c.modelConfig.api_key,env.BID_CODEX_TOKEN);assert.equal(c.modelConfig.model_name,'gpt-6-astra');
  assert.equal(loadConfig({}).codexBridge.enabled,false);
  for(const bad of [{BID_MODEL_BACKEND:'unknown'},{BID_CODEX_EXECUTABLE:'codex'},{BID_CODEX_TOKEN:'short'},{BID_CODEX_PORT:'4381'},{BID_CODEX_PORT:'0'},{BID_CODEX_TIMEOUT_MS:'300001'}])assert.throws(()=>loadConfig({...env,...bad}),/codex|backend/);

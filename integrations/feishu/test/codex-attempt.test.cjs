@@ -1,0 +1,22 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { writingModelConfig } = require('../codex-attempt.cjs');
+const { createCodexBridge } = require('../codex-bridge.cjs');
+test('registered writing attempts allow explicit retry while automatic repeats stay fenced', async t => {
+  const store = new Map(), token = 't'.repeat(48); let calls = 0;
+  const config = { codexBridge: { enabled: true, host: '127.0.0.1', port: 0, apiKey: token, model: 'gpt-6-astra' } };
+  const bridge = createCodexBridge({ config, store, executor: { authStatus: async () => true, run: async () => { if (++calls === 1) throw Error('transient'); return 'retried'; } } });
+  await bridge.start(); t.after(() => bridge.close());
+  config.modelConfig = { base_url: 'http://127.0.0.1:' + bridge.server.address().port + '/v1' };
+  const post = base => fetch(base + '/chat/completions', { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-6-astra', messages: [{ role: 'user', content: 'fixture' }] }) });
+  assert.equal((await post(config.modelConfig.base_url + '/attempts/' + '0'.repeat(64))).status, 403);
+  const job = { id: 'job' }, first = writingModelConfig({ config, store, job });
+  assert.equal((await post(first.base_url)).status, 502);
+  assert.equal((await post(writingModelConfig({ config, store, job }).base_url)).status, 409);
+  assert.equal(calls, 1);
+  const retry = writingModelConfig({ config, store, job: { ...job, modelAttempt: 'confirmed-event-2' } });
+  assert.notEqual(first.base_url, retry.base_url);
+  assert.equal((await post(retry.base_url)).status, 200);
+  assert.equal((await post(retry.base_url)).status, 200); assert.equal(calls, 2);
+  assert.equal((await post(first.base_url)).status, 409);
+});

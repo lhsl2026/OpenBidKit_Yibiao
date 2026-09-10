@@ -294,6 +294,43 @@ test('authStatus runs only login status, ignores all output, and maps failures t
   for (const call of f.calls) assert.deepEqual(call.options.stdio, ['ignore', 'ignore', 'ignore']);
 });
 
+test('run and auth inherit only system, Codex login, proxy, and certificate environment', async (t) => {
+  const injected = {
+    BID_CODEX_TOKEN: 'private-bridge-token',
+    BID_API_KEY: 'private-service-token',
+    LARK_APP_SECRET: 'private-lark-secret',
+    PREREAD_RELAY_AUTHORIZATION: 'Bearer private-relay',
+    MODEL_PROVIDER_API_KEY: 'private-provider-key',
+    OPENAI_API_KEY: 'private-openai-key',
+    CODEX_HOME: path.join(os.tmpdir(), 'codex-home-for-test'),
+    HTTPS_PROXY: 'http://proxy.test:8080',
+    SSL_CERT_FILE: path.join(os.tmpdir(), 'test-ca.pem'),
+  };
+  const previous = Object.fromEntries(Object.keys(injected).map(key => [key, process.env[key]]));
+  Object.assign(process.env, injected);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  const f = fixture(t, {}, [complete('ok'), call => call.child.close(0)]);
+
+  assert.equal(await f.executor.run({ messages: [] }), 'ok');
+  assert.equal(await f.executor.authStatus(), true);
+
+  for (const call of f.calls) {
+    assert.equal(call.options.env.CODEX_HOME, injected.CODEX_HOME);
+    assert.equal(call.options.env.HTTPS_PROXY, injected.HTTPS_PROXY);
+    assert.equal(call.options.env.SSL_CERT_FILE, injected.SSL_CERT_FILE);
+    for (const secret of ['BID_CODEX_TOKEN', 'BID_API_KEY', 'LARK_APP_SECRET', 'PREREAD_RELAY_AUTHORIZATION', 'MODEL_PROVIDER_API_KEY', 'OPENAI_API_KEY']) {
+      assert.equal(Object.hasOwn(call.options.env, secret), false, `${secret} leaked to Codex child`);
+    }
+    for (const key of Object.keys(call.options.env)) {
+      assert.ok(!/^(?:BID_|LARK_|PREREAD_|MODEL_PROVIDER_|OPENAI_)/i.test(key), `unexpected application environment: ${key}`);
+    }
+  }
+});
+
 test('authStatus creates its configured cwd before the first login status probe', async (t) => {
   const f = fixture(t, {}, [(call) => call.child.close(0)]);
   fs.rmSync(f.root, { recursive: true, force: true });

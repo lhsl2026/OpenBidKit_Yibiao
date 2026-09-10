@@ -89,7 +89,10 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
   }
   const preread = config.prereadUrl ? createPrereadClient({ baseUrl: config.prereadUrl, apiKey: config.prereadKey, relayAuthorization: config.relayAuthorization }) : null;
   const lark = config.appId && config.appSecret ? createLarkClient({ appId: config.appId, appSecret: config.appSecret }) : null;
-  const write = (job, { signal } = {}) => require('./writing.cjs').runWritingJob({ job, root: config.writingRoot, electronPath: config.electronPath, clientRoot: config.clientRoot, modelConfig: config.modelConfig, signal });
+  const write = (job, { signal } = {}) => require('./writing.cjs').runWritingJob({
+    job, root: config.writingRoot, electronPath: config.electronPath, clientRoot: config.clientRoot,
+    modelConfig: require('./codex-attempt.cjs').writingModelConfig({ config, store, job }), signal
+  });
   let selection, documentRecovery;
   const runner = createRunner({ store, config, workflow, preread, lark, write, clock,
     onReceipt: (receipt, meta) => { selection.queue(receipt, meta); documentRecovery.queueReceipt(receipt, meta); },

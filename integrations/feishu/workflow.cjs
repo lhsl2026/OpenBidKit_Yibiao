@@ -55,7 +55,7 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
           const job=store.listWriting().find(j=>j.project_id===p.id);if(!job)throw Error('writing_missing');jobId=job.id;
           if(action.action==='retry'){
             if(!['failed','not_ready','interrupted'].includes(job.status))throw Error('retry_not_allowed');
-            store.resumeWriting(job,job.payload,clock());
+            store.resumeWriting(job,{...job.payload,modelAttempt:key('confirmed-model-retry',job.id,action.eventId)},clock());
           }else{
             const c=job.result?.confirmation;
             if(job.status!=='waiting_confirmation'||!c?.challenge||c.challenge!==action.challenge)throw Error('confirmation_stale');
@@ -66,7 +66,7 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
             else if(c.type==='global_facts')confirmations.globalFacts={challenge:c.challenge,groups:c.groups};
             else if(c.type==='content_decision')confirmations.contentDecision={challenge:c.challenge,action:'retry_failed'};
             else throw Error('confirmation_requires_material');
-            store.resumeWriting(job,{...job.payload,confirmations},clock(),stage);
+            store.resumeWriting(job,{...job.payload,confirmations,...(c.type==='content_decision'?{modelAttempt:key('confirmed-model-retry',job.id,action.eventId)}:{})},clock(),stage);
           }
         }
         result={projectId:p.id,writingJobId:jobId,status:'queued'};store.touchCard(p.id,clock());

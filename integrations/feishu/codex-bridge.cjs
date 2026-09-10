@@ -5,6 +5,7 @@ const { createHash, timingSafeEqual } = require('node:crypto');
 
 const CACHE_MS = 24 * 60 * 60 * 1000;
 const AUTH_CACHE_MS = 60000;
+const AUTH_CLOSE_WAIT_MS = 10000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const INTERNAL_ERROR = Symbol('bridge_error');
 const PREFIX = 'codex-bridge-request:';
@@ -60,9 +61,9 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
   function authReady() {
     return authValue && authCheckedAt !== null && clock() - authCheckedAt < AUTH_CACHE_MS;
   }
-  async function refreshAuth() {
+  async function refreshAuth(force = false) {
     if (closed) return false;
-    if (authCheckedAt !== null && clock() - authCheckedAt < AUTH_CACHE_MS) return authValue;
+    if (!force && authCheckedAt !== null && clock() - authCheckedAt < AUTH_CACHE_MS) return authValue;
     if (authRefresh) return authRefresh;
     authRefresh = (async () => {
       let ready = false;
@@ -193,12 +194,15 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
         const ready = status().ready; json(response, ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready', authReady: authReady() }); return;
       }
       if (request.method === 'GET' && pathname === '/v1/models') { json(response, 200, { object: 'list', data: [{ id: options.model, object: 'model', owned_by: 'local-codex' }] }); return; }
-      if (request.method !== 'POST' || pathname !== '/v1/chat/completions') throw failure(404, 'not_found');
+      const scoped = pathname.match(/^\/v1\/attempts\/([a-f0-9]{64})\/chat\/completions$/);
+      if (request.method !== 'POST' || (pathname !== '/v1/chat/completions' && !scoped)) throw failure(404, 'not_found');
+      if (scoped && !store.get('codex-attempt:' + scoped[1])) throw failure(403, 'attempt_not_authorized');
       if (!(await refreshAuth())) throw failure(503, 'codex_auth_unavailable');
       const body = await readBody(request);
       owned(); if (closed) throw failure(503, 'bridge_closed');
       if (response.destroyed || request.aborted) return;
-      job = getJob(normalize(body, options.model)); job.clients++;
+      const payload = normalize(body, options.model);
+      job = getJob(scoped ? { ...payload, attemptScope: scoped[1] } : payload); job.clients++;
       const result = await job.promise;
       completion(response, result, body.stream === true);
     } catch (error) { respondError(response, error); }
@@ -221,7 +225,7 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
     leaseTimer = setInterval(() => {
       try { owned(); } catch { for (const job of jobs.values()) cancel(job, failure(503, 'ownership_lost')); }
     }, 1000); leaseTimer.unref();
-    authTimer = setInterval(() => { void refreshAuth(); }, AUTH_CACHE_MS); authTimer.unref();
+    authTimer = setInterval(() => { void refreshAuth(true); }, AUTH_CACHE_MS - 15000); authTimer.unref();
   }
   function close() {
     if (closing) return closing;
@@ -229,6 +233,16 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
     for (const job of jobs.values()) cancel(job, failure(503, 'bridge_closed'));
     closing = (async () => {
       const stopped = new Promise(resolve => { if (!server.listening) resolve(); else { server.close(resolve); server.closeAllConnections(); } });
+      const pendingAuth = authRefresh;
+      if (pendingAuth) {
+        let authWaitTimer;
+        try {
+          await Promise.race([
+            pendingAuth.catch(() => false),
+            new Promise(resolve => { authWaitTimer = setTimeout(resolve, AUTH_CLOSE_WAIT_MS); }),
+          ]);
+        } finally { clearTimeout(authWaitTimer); }
+      }
       await Promise.allSettled([...executions]);
       await stopped; started = false;
     })();
