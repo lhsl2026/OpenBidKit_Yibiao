@@ -1,0 +1,112 @@
+{
+  "offline": true,
+  "providerCalls": 0,
+  "rawCacheUnchanged": true,
+  "realMergeExecuted": true,
+  "chunks": [
+    {
+      "cacheSuffix": "6f96931d60",
+      "kind": "fact",
+      "inputCount": 24,
+      "outputCount": 24,
+      "unknownPage": 5
+    },
+    {
+      "cacheSuffix": "e9fd578cb2",
+      "kind": "fact",
+      "inputCount": 23,
+      "outputCount": 23,
+      "unknownPage": 2
+    },
+    {
+      "cacheSuffix": "f00549fb4c",
+      "kind": "fact",
+      "inputCount": 14,
+      "outputCount": 14,
+      "unknownPage": 2
+    },
+    {
+      "cacheSuffix": "cb8343618e",
+      "kind": "fact",
+      "inputCount": 21,
+      "outputCount": 21,
+      "unknownPage": 4
+    },
+    {
+      "cacheSuffix": "a17b200a2f",
+      "kind": "fact",
+      "inputCount": 22,
+      "outputCount": 22,
+      "unknownPage": 1
+    },
+    {
+      "cacheSuffix": "c666f51850",
+      "kind": "fact",
+      "inputCount": 20,
+      "outputCount": 20,
+      "unknownPage": 6
+    },
+    {
+      "cacheSuffix": "d6c49ce9fd",
+      "kind": "score",
+      "inputCount": 4,
+      "outputCount": 4,
+      "unknownPage": 2
+    },
+    {
+      "cacheSuffix": "38f430f87f",
+      "kind": "score",
+      "inputCount": 0,
+      "outputCount": 0,
+      "unknownPage": 0
+    },
+    {
+      "cacheSuffix": "8ea6d60554",
+      "kind": "fact",
+      "inputCount": 23,
+      "outputCount": 23,
+      "unknownPage": 12
+    },
+    {
+      "cacheSuffix": "2ec3d1367f",
+      "kind": "score",
+      "inputCount": 10,
+      "outputCount": 10,
+      "unknownPage": 3
+    },
+    {
+      "cacheSuffix": "61d7633796",
+      "kind": "score",
+      "inputCount": 10,
+      "outputCount": 10,
+      "unknownPage": 5
+    },
+    {
+      "cacheSuffix": "2ca9a1f07f",
+      "kind": "fact",
+      "inputCount": 22,
+      "outputCount": 22,
+      "unknownPage": 4
+    }
+  ],
+  "normalizedFindingCount": 193,
+  "totalFindings": 193,
+  "unconfirmedFindings": 143,
+  "pendingScoreRecords": 21,
+  "report": {
+    "qualifications": 12,
+    "redlines": 18,
+    "contractRequirements": 31,
+    "complianceRequirements": 3,
+    "deliveryServiceRequirements": 14,
+    "technicalScores": 0,
+    "commercialScores": 0,
+    "priceScores": 1,
+    "priceScoreValues": [
+      30
+    ],
+    "qualityStatus": "待复核",
+    "recommendation": "暂缓",
+    "unknownSupplementabilityRendered": true
+  }
+}

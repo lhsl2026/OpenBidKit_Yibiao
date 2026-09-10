@@ -1,0 +1,852 @@
+diff --git a/server/modules/preread/preread-bid-manager-report.ts b/server/modules/preread/preread-bid-manager-report.ts
+index 76cb432..f2837b4 100644
+--- a/server/modules/preread/preread-bid-manager-report.ts
++++ b/server/modules/preread/preread-bid-manager-report.ts
+@@ -192,7 +192,9 @@ const actionText = (
+     return '记录不适用依据并由投标负责人复核';
+   }
+   if (status === 'gap') {
+-    return finding.commercial?.supplementableBeforeDeadline
++    return finding.commercial?.supplementableBeforeDeadline === undefined
++      ? '待核实：确认截止前能否补齐并核验证明材料'
++      : finding.commercial?.supplementableBeforeDeadline
+       ? '制定补齐方案并在截止前完成证据核验'
+       : '确认无替代路径后停止该项目投标准备';
+   }
+@@ -254,6 +256,7 @@ const gapReasonFor = (finding: PrereadReportFindingContext): string => {
+       ? `${statement}：${category}证据尚待核验，可在截止前补齐。`
+       : `${statement}：${category}证据尚待核验，截止前补齐路径未确认。`;
+   }
++  if (finding.commercial?.supplementableBeforeDeadline === undefined) return `${statement}：存在缺口，截止前补齐可能性待核实。`;
+   return consequence
+     ? `${statement}：${category}存在明确缺口；${consequence}`
+     : finding.commercial?.supplementableBeforeDeadline
+@@ -541,14 +544,14 @@ export const buildBidManagerReportModel = (
+   const irreparableRedLine = redLineFindings.some(
+     (finding) =>
+       evidenceStatus(finding) === 'gap' &&
+-      finding.commercial?.supplementableBeforeDeadline !== true,
++      finding.commercial?.supplementableBeforeDeadline === false,
+   );
+   const pendingRedLine = redLineFindings.some((finding) => {
+     const status = evidenceStatus(finding);
+     return (
+       status === 'unconfirmed' ||
+       (status === 'gap' &&
+-        finding.commercial?.supplementableBeforeDeadline === true)
++        finding.commercial?.supplementableBeforeDeadline !== false)
+     );
+   });
+ 
+@@ -559,9 +562,13 @@ export const buildBidManagerReportModel = (
+     decisionReason =
+       '存在截止前不可补齐的资格或提交红线，继续投入无法形成合格投标。';
+   } else if (pendingRedLine) {
+-    decision = '补齐后推进';
+-    decisionReason =
+-      '资格或提交红线尚未完成公司证据核验，补齐并确认后再进入正式编标。';
++    const supplementabilityUnknown = redLineFindings.some(finding =>
++      finding.commercial?.supplementableBeforeDeadline === undefined &&
++      (evidenceStatus(finding) === 'gap' || evidenceStatus(finding) === 'unconfirmed'));
++    decision = supplementabilityUnknown ? '暂缓' : '补齐后推进';
++    decisionReason = supplementabilityUnknown
++      ? '红线条款截止前能否补齐待核实，确认前暂缓正式编标。'
++      : '资格或提交红线尚未完成公司证据核验，补齐并确认后再进入正式编标。';
+   } else if (score.contestable > 0) {
+     decision = '补齐后推进';
+     decisionReason = '当前无不可补齐红线，但仍有商务分可通过补证争取。';
+diff --git a/server/modules/preread/preread-commercial-metadata.ts b/server/modules/preread/preread-commercial-metadata.ts
+index 96a9b4a..f32dca0 100644
+--- a/server/modules/preread/preread-commercial-metadata.ts
++++ b/server/modules/preread/preread-commercial-metadata.ts
+@@ -143,8 +143,8 @@ export const normalizePrereadCommercialMetadata = (
+     requirementKind,
+     materialCategory,
+     responsibleRole,
+-    supplementableBeforeDeadline:
+-      value.supplementableBeforeDeadline === true,
++    ...(typeof value.supplementableBeforeDeadline === 'boolean'
++      ? { supplementableBeforeDeadline: value.supplementableBeforeDeadline } : {}),
+     ...(maximumScore === undefined ? {} : { maximumScore }),
+     ...(consequence ? { consequence } : {}),
+     ...(bidderEvidenceStatus ? { bidderEvidenceStatus } : {}),
+diff --git a/server/modules/preread/preread-knowledge-renderer.ts b/server/modules/preread/preread-knowledge-renderer.ts
+index 2be8543..86e214c 100644
+--- a/server/modules/preread/preread-knowledge-renderer.ts
++++ b/server/modules/preread/preread-knowledge-renderer.ts
+@@ -22,7 +22,7 @@ const sourcePage = (value: PrereadReportEvidence | undefined): string => {
+   if (value.sheet) {
+     return `${value.sheet}${value.row === undefined ? '' : `第${value.row}行`}`;
+   }
+-  return value.fileName === '官方公告' ? '公告' : '待定位';
++  return value.fileName === '官方公告' ? '公告' : cell(`${value.section}（单页定位待核实）`);
+ };
+ 
+ const BASIC_LABELS: Record<
+@@ -63,7 +63,7 @@ const qualificationStatus = (
+   if (status === 'confirmed_met') return '已核验证据满足';
+   if (status === 'not_applicable') return '不适用';
+   if (status === 'gap') {
+-    return item.supplementableBeforeDeadline ? '可在截止前补齐' : '明确不满足';
++    return item.supplementableBeforeDeadline === undefined ? '待核实：补齐可能性未知' : item.supplementableBeforeDeadline ? '可在截止前补齐' : '明确不满足';
+   }
+   return '待人工确认';
+ };
+@@ -87,6 +87,7 @@ const SCORE_LABELS = {
+ } as const;
+ 
+ const REDLINE_LABELS = {
++  unknown: '红线类别待核实',
+   qualification: '资格红线',
+   substantive: '实质性条款',
+   invalid_bid: '无效投标/废标条款',
+@@ -298,7 +299,7 @@ export const renderPrereadKnowledgeMarkdown = (
+     ...(model.qualifications.length > 0
+       ? model.qualifications.map(
+           (item) =>
+-            `| ${QUALIFICATION_LABELS[item.category]} | ${cell(item.requirement)} | ${cell(item.minimumRequirement)} | ${cell(item.evidenceRequirement)} | ${item.mandatory ? '是' : '否'} | ${cell(qualificationMatchSummary(item))} | ${cell(item.gapAction)} | ${sourcePage(item.evidence)} |`,
++            `| ${QUALIFICATION_LABELS[item.category]} | ${cell(item.requirement)} | ${cell(item.minimumRequirement)} | ${cell(item.evidenceRequirement)} | ${item.mandatory === undefined ? '待核实' : item.mandatory ? '是' : '否'} | ${cell(qualificationMatchSummary(item))} | ${cell(item.gapAction)} | ${sourcePage(item.evidence)} |`,
+         )
+       : [
+           '| 未识别 | 未识别到资格要求 | 待人工确认 | 待人工确认 | 待确认 | 待人工确认 | 补齐资格条款提取 | 待定位 |',
+diff --git a/server/modules/preread/preread-knowledge-report.ts b/server/modules/preread/preread-knowledge-report.ts
+index 65b90ed..38e7ced 100644
+--- a/server/modules/preread/preread-knowledge-report.ts
++++ b/server/modules/preread/preread-knowledge-report.ts
+@@ -157,8 +157,8 @@ export interface QualificationReportItem {
+   requirement: string;
+   minimumRequirement: string;
+   evidenceRequirement: string;
+-  mandatory: boolean;
+-  supplementableBeforeDeadline: boolean;
++  mandatory?: boolean;
++  supplementableBeforeDeadline?: boolean;
+   matchStatus: PrereadBidderMatchStatus;
+   companyName?: string;
+   companyEvidencePaths: string[];
+@@ -206,13 +206,13 @@ export interface PriceScoreItem extends ScoreItemBase {
+ 
+ export interface RedlineReportItem {
+   id: string;
+-  category: 'qualification' | 'substantive' | 'invalid_bid';
++  category: 'qualification' | 'substantive' | 'invalid_bid' | 'unknown';
+   requirement: string;
+   triggerCondition: string;
+   consequence: string;
+   currentState: string;
+   requiredAction: string;
+-  supplementableBeforeDeadline: boolean;
++  supplementableBeforeDeadline?: boolean;
+   evidence?: PrereadReportEvidence;
+ }
+ 
+@@ -402,15 +402,15 @@ const toPriority = (
+ 
+ const matchAvailability = (
+   status: PrereadBidderMatchStatus | undefined,
+-  supplementableBeforeDeadline = false,
++  supplementableBeforeDeadline?: boolean,
+ ): CommercialScoreItem['availability'] => {
+   if (status === 'confirmed_met' || status === 'not_applicable') {
+     return '当前可得';
+   }
+   if (status === 'gap') {
+-    return supplementableBeforeDeadline ? '能力满足后可得' : '客观不可得';
++    return supplementableBeforeDeadline === undefined ? '待核验' : supplementableBeforeDeadline ? '能力满足后可得' : '客观不可得';
+   }
+-  if (status === 'unconfirmed') return '补齐后可得';
++  if (status === 'unconfirmed') return supplementableBeforeDeadline === true ? '补齐后可得' : '待核验';
+   return '待核验';
+ };
+ 
+@@ -1327,7 +1327,7 @@ const recommendationOf = (
+     (item) =>
+       item.mandatory &&
+       item.matchStatus === 'gap' &&
+-      !item.supplementableBeforeDeadline,
++      item.supplementableBeforeDeadline === false,
+   );
+   if (fatalGap) {
+     return {
+@@ -1379,9 +1379,10 @@ const recommendationOf = (
+     decisionQualifications.length === 0 ||
+     decisionQualifications.some(
+       (item) =>
+-        item.mandatory &&
+-        item.matchStatus !== 'confirmed_met' &&
+-        item.matchStatus !== 'not_applicable',
++        (item.mandatory === undefined || item.supplementableBeforeDeadline === undefined ||
++        (item.mandatory &&
++        item.matchStatus !== 'confirmed_met') &&
++        item.matchStatus !== 'not_applicable'),
+     )
+   ) {
+     return {
+@@ -2111,7 +2112,9 @@ export const buildPrereadKnowledgeReport = (
+             ? { companyMatches: allCompanyMatches }
+             : {}),
+           gapAction:
+-            nonCompanyRuleType === 'product_compliance'
++            metadata.supplementableBeforeDeadline === undefined || metadata.mandatory === undefined
++              ? '待核实：确认条款是否强制、截止前能否补齐，并核验公司证明材料'
++              : nonCompanyRuleType === 'product_compliance'
+               ? '按招标文件要求核验拟投产品证书，并在规定节点提交证明文件'
+               : nonCompanyRuleType === 'bid_structure'
+                 ? '不得以联合体形式投标，以单一投标主体编制并提交文件'
+@@ -2312,7 +2315,9 @@ export const buildPrereadKnowledgeReport = (
+           triggerCondition: metadata.triggerCondition,
+           consequence: metadata.consequence,
+           currentState,
+-          requiredAction: metadata.supplementableBeforeDeadline
++          requiredAction: metadata.supplementableBeforeDeadline === undefined
++            ? '待核实：确认触发条件、后果及截止前补齐可能性'
++            : metadata.supplementableBeforeDeadline
+             ? '在投标截止前完成并留存核验证据'
+             : '当前不可补齐；确认触发时停止投标',
+           supplementableBeforeDeadline: metadata.supplementableBeforeDeadline,
+@@ -2336,7 +2341,9 @@ export const buildPrereadKnowledgeReport = (
+       (finding.commercial?.requirementKind === 'submission'
+         ? '影响投标文件符合性审查'
+         : '影响项目履约、成本或合同风险'),
+-    requiredAction: finding.commercial?.supplementableBeforeDeadline
++    requiredAction: finding.commercial?.supplementableBeforeDeadline === undefined
++      ? '待核实：确认条款要求及截止前补充材料的可能性'
++      : finding.commercial?.supplementableBeforeDeadline
+       ? '投标截止前准备材料并完成复核'
+       : '当前不可补充，确认满足后再投标',
+     responsibleRole: finding.commercial?.responsibleRole ?? '商务负责人',
+@@ -2579,6 +2586,9 @@ export const buildPrereadKnowledgeReport = (
+       manualReviewItems: [
+         ...context.manualActions.map((action) => action.instructions),
+         ...parserReviewItemsOf(context.document),
++        ...context.findings
++          .filter(finding => finding.findingType === '待确认事项' || (finding.findingType === '评分项' && !finding.evaluation))
++          .map(finding => `待核实条款：${finding.statement}；出处：${finding.section ?? '章节待核实'}${finding.page ? '，第' + finding.page + '页' : '（单页定位待核实）'}`),
+       ],
+     },
+     versionChanges: buildPrereadVersionChanges(context),
+diff --git a/server/modules/preread/preread-parser.service.spec.ts b/server/modules/preread/preread-parser.service.spec.ts
+index 1c467f2..d88c0ee 100644
+--- a/server/modules/preread/preread-parser.service.spec.ts
++++ b/server/modules/preread/preread-parser.service.spec.ts
+@@ -1525,7 +1525,9 @@ describe('PrereadParserService', () => {
+     expect(persistence.findings[0]).toEqual({
+       findingType: '资格条件',
+       finding: {
+-        status: 'confirmed',
++        status: 'unconfirmed',
++        recommendation: '暂缓',
++        qualification: { category: 'other', minimumRequirement: '投标人应具备 AAA 资质' },
+         statement: '投标人应具备 AAA 资质',
+         evidence: {
+           documentVersion: 3,
+@@ -2945,7 +2947,7 @@ describe('PrereadParserService', () => {
+     });
+   });
+ 
+-  it('prefers focused score facts, merges semantic duplicates, and drops zero-point pseudo items', async () => {
++  it('prefers focused score facts, merges semantic duplicates, and retains zero-point items for review', async () => {
+     const persistence = new InMemoryPrereadParserPersistence();
+     const service = new PrereadParserService(
+       createCapabilityService({
+@@ -3017,10 +3019,11 @@ describe('PrereadParserService', () => {
+ 
+     await expect(
+       service.parseAndPersist({ taskId: 'task-1', documentId: 'document-1' }),
+-    ).resolves.toEqual({ status: 'analyzing', findingCount: 2 });
++    ).resolves.toEqual({ status: 'analyzing', findingCount: 3 });
+     expect(
+       persistence.findings.map((item) => item.finding.statement),
+-    ).toEqual(['业绩评分最高5分', '企业认证最高5分']);
++    ).toEqual(['业绩评分最高5分', '企业认证最高5分', '按要求提供材料得0分']);
++    expect(persistence.findings[2]).toMatchObject({ findingType: '待确认事项', finding: { status: 'unconfirmed' } });
+   });
+ 
+   it('keeps the complete scoring section when it exceeds the business-summary budget', async () => {
+diff --git a/server/modules/preread/preread-parser.service.ts b/server/modules/preread/preread-parser.service.ts
+index 1291a59..83dca6c 100644
+--- a/server/modules/preread/preread-parser.service.ts
++++ b/server/modules/preread/preread-parser.service.ts
+@@ -38,7 +38,7 @@ import {
+   HYDRATED_FINDING_TYPES,
+ } from './preread-capability-contract';
+ import { normalizePrereadCommercialMetadata } from './preread-commercial-metadata';
+-import { normalizePrereadStructuredMetadata } from './preread-structured-metadata';
++import { normalizePrereadStructuredMetadata, normalizePrereadEvaluationCategory } from './preread-structured-metadata';
+ import { PrereadReportService } from './preread-report.service';
+ import type {
+   NewPrereadReport,
+@@ -1136,18 +1136,8 @@ const scoreMetadata = (finding: Record<string, unknown>) => {
+     .filter((value): value is string => value !== undefined)
+     .join(' ');
+   const explicitCategory = readString(evaluation?.category);
+-  const category =
+-    explicitCategory === 'technical' ||
+-    explicitCategory === 'commercial' ||
+-    explicitCategory === 'price'
+-      ? explicitCategory
+-      : commercial?.requirementKind === 'score'
+-        ? 'commercial'
+-        : /价格|报价|基准价/u.test(combined)
+-          ? 'price'
+-          : /技术|方案|参数/u.test(combined)
+-            ? 'technical'
+-            : 'commercial';
++  const category = normalizePrereadEvaluationCategory(explicitCategory) ??
++    (!explicitCategory && commercial?.requirementKind === 'score' ? 'commercial' : undefined);
+   const topics = SCORE_SEMANTIC_TOPICS.filter(([, pattern]) =>
+     pattern.test(combined),
+   ).map(([topic]) => topic);
+@@ -1185,7 +1175,7 @@ const scoreDeduplicationKey = (
+ };
+ 
+ const SCORE_TABLE_PAGE_GAP = 5;
+-const SCORE_CATEGORIES = new Set(['technical', 'commercial', 'price']);
++const SCORE_CATEGORIES = new Set(['technical', 'commercial', 'price'] as const);
+ 
+ const selectClosedScoreTable = (
+   findings: Record<string, unknown>[],
+@@ -1253,7 +1243,13 @@ const selectClosedScoreTable = (
+     : findings;
+ };
+ 
+-const mergeExtractedFacts = (
++const pendingScoreReview = (finding: Record<string, unknown>): Record<string, unknown> => ({
++  ...finding,
++  section: `${readString(finding.section) ?? '章节待核实'}（评分分类、分值或表格归属待核实；原始评分元数据：${JSON.stringify(finding.evaluation ?? finding.commercial ?? {})}）`,
++  confidence: Math.min(readNumber(finding.confidence) ?? 0, 0.79),
++});
++
++export const mergeExtractedFacts = (
+   batches: ExtractedPrereadFacts[],
+ ): ExtractedPrereadFacts => {
+   const merged = Object.fromEntries(
+@@ -1263,15 +1259,18 @@ const mergeExtractedFacts = (
+     ]),
+   ) as ExtractedPrereadFacts;
+   const indexes = new Map<string, number>();
+-  for (const batch of batches) {
++  const sourceBatches = batches.map((batch) => {
++    const eligible = (finding: Record<string, unknown>) =>
++      positiveScoreFinding(finding) && scoreMetadata(finding).category !== undefined;
++    return {
++      ...batch,
++      评分项: batch.评分项.filter(eligible),
++      待确认事项: [...batch.待确认事项, ...batch.评分项.filter(finding => !eligible(finding)).map(pendingScoreReview)],
++    };
++  });
++  for (const batch of sourceBatches) {
+     for (const findingType of HYDRATED_FINDING_TYPES) {
+       for (const finding of batch[findingType]) {
+-        if (
+-          findingType === '评分项' &&
+-          !positiveScoreFinding(finding)
+-        ) {
+-          continue;
+-        }
+         const key =
+           findingType === '评分项'
+             ? scoreDeduplicationKey(finding)
+@@ -1295,7 +1294,9 @@ const mergeExtractedFacts = (
+       }
+     }
+   }
+-  merged.评分项 = selectClosedScoreTable(merged.评分项);
++  const selectedScores = selectClosedScoreTable(merged.评分项);
++  merged.待确认事项.push(...merged.评分项.filter(finding => !selectedScores.includes(finding)).map(pendingScoreReview));
++  merged.评分项 = selectedScores;
+   return merged;
+ };
+ 
+@@ -1394,7 +1395,8 @@ const normalizeExtractedFindingEntry = (
+ ): Record<string, unknown> | undefined => {
+   if (!isRecord(value)) return undefined;
+   const statement = readString(value.statement);
+-  const section = readString(value.section);
++  const originalSection = readString(value.section);
++  const section = originalSection ?? '章节待核实';
+   const quote = readString(value.quote);
+   const confidence = readFiniteNumber(value.confidence);
+   if (
+@@ -1422,8 +1424,13 @@ const normalizeExtractedFindingEntry = (
+     statement,
+     section,
+     quote,
+-    confidence,
++    confidence: originalSection ? confidence : Math.min(confidence, 0.79),
+   };
++  // Preserve ambiguous source locators without pretending they identify a single page.
++  const unresolvedPage = readString(value.page);
++  if (unresolvedPage && !(page !== undefined && Number.isInteger(page) && page > 0)) {
++    normalized.section = `${section}（原始页码：${unresolvedPage}；待核实）`;
++  }
+   delete normalized.page;
+   delete normalized.sheet;
+   delete normalized.row;
+@@ -1443,7 +1450,7 @@ const normalizeExtractedFindingEntry = (
+       row: normalized.row as number | undefined,
+     })
+   ) {
+-    if (hasCoordinateInput) return undefined;
++    if (hasCoordinateInput && !unresolvedPage) return undefined;
+     delete normalized.page;
+     delete normalized.sheet;
+     delete normalized.row;
+@@ -1452,7 +1459,7 @@ const normalizeExtractedFindingEntry = (
+   return normalized;
+ };
+ 
+-const normalizeExtractedFacts = (value: unknown): ExtractedPrereadFacts => {
++export const normalizeExtractedFacts = (value: unknown): ExtractedPrereadFacts => {
+   if (!isRecord(value)) {
+     throw new InvalidStructuredOutputError(
+       'Invalid bid-fact-extractor output: expected object',
+@@ -1484,7 +1491,7 @@ const normalizeExtractedFacts = (value: unknown): ExtractedPrereadFacts => {
+   );
+ };
+ 
+-const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
++export const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
+   if (!isRecord(value)) {
+     throw new InvalidStructuredOutputError(
+       'Invalid bid-score-extractor output: expected object',
+@@ -1494,9 +1501,7 @@ const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
+   const methods = value.评分办法 ?? [];
+   if (
+     !Array.isArray(scoreItems) ||
+-    !scoreItems.every(isExtractedFindingEntry) ||
+-    !Array.isArray(methods) ||
+-    !methods.every(isExtractedFindingEntry)
++    !Array.isArray(methods)
+   ) {
+     throw new InvalidStructuredOutputError(
+       'Invalid bid-score-extractor output: invalid entries',
+@@ -1505,8 +1510,13 @@ const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
+   const facts = Object.fromEntries(
+     HYDRATED_FINDING_TYPES.map((findingType) => [findingType, []]),
+   ) as ExtractedPrereadFacts;
+-  facts.评分项 = scoreItems;
+-  facts.项目事实 = methods;
++  const normalizeEntries = (entries: unknown[]) => entries.map((entry) => {
++    const normalized = normalizeExtractedFindingEntry(entry);
++    if (!normalized) throw new InvalidStructuredOutputError('Invalid bid-score-extractor output: invalid entries');
++    return normalized;
++  });
++  facts.评分项 = normalizeEntries(scoreItems);
++  facts.项目事实 = normalizeEntries(methods);
+   return facts;
+ };
+ 
+@@ -1772,7 +1782,7 @@ const isExtractedFindingEntry = (
+     row: value.row as number | undefined,
+   });
+ 
+-const toFinding = (
++export const toFinding = (
+   findingType: FindingType,
+   raw: Record<string, unknown>,
+   context: PrereadParsingContext,
+@@ -1782,17 +1792,22 @@ const toFinding = (
+   const sheet = readString(raw.sheet);
+   const row = readPositiveInteger(raw.row);
+   const commercial = normalizePrereadCommercialMetadata(
+-    raw.commercial,
++    raw.commercial ?? (findingType === '商务条款' ? {} : undefined),
+     findingType,
+   );
+   const structured = normalizePrereadStructuredMetadata(raw, findingType);
++  const metadataNeedsReview =
++    (findingType === '资格条件' && (structured.qualification?.mandatory === undefined || structured.qualification?.supplementableBeforeDeadline === undefined)) ||
++    (findingType === '废标风险' && (structured.redline?.category === 'unknown' || structured.redline?.supplementableBeforeDeadline === undefined)) ||
++    (findingType === '商务条款' && commercial?.supplementableBeforeDeadline === undefined) ||
++    (findingType === '评分项' && !structured.evaluation);
+   const candidate: PrereadFinding = {
+     status:
+-      findingType === '待确认事项' || confidence < 0.8
++      findingType === '待确认事项' || confidence < 0.8 || metadataNeedsReview
+         ? 'unconfirmed'
+         : 'confirmed',
+     statement: readString(raw.statement) ?? '待确认：插件未返回有效结论。',
+-    ...(findingType === '待确认事项' || confidence < 0.8
++    ...(findingType === '待确认事项' || confidence < 0.8 || metadataNeedsReview
+       ? { recommendation: '暂缓' as const }
+       : {}),
+     ...(commercial ? { commercial } : {}),
+diff --git a/server/modules/preread/preread-relay.controller.spec.ts b/server/modules/preread/preread-relay.controller.spec.ts
+index 1942697..95cdccf 100644
+--- a/server/modules/preread/preread-relay.controller.spec.ts
++++ b/server/modules/preread/preread-relay.controller.spec.ts
+@@ -1790,6 +1790,38 @@ describe('PrereadRelayController', () => {
+     expect(completeReportCalls).toBe(0);
+   });
+ 
++  it('replays compatible extraction through the inline parser and returns its finalized report', async () => {
++    const taskId = '8154f64c-81e1-4fc4-849f-95cbd4e9ff41';
++    const documentId = '4bb42e77-6428-4af0-9d26-9877ea93e079';
++    factExtractionRetryStatus = 'completed';
++    const response = await fetch(`${baseUrl}/openapi/preread/tasks/${taskId}/replay-compatible-extraction`, {
++      method: 'POST',
++      headers: { authorization: relayAuthorization, 'content-type': 'application/json' },
++      body: JSON.stringify({ documentId }),
++    });
++    expect(response.status).toBe(201);
++    expect(await response.json()).toMatchObject({ extraction: { status: 'completed', findingCount: 12 }, report: latestReportResult });
++    expect(lastFactExtractionRetry).toEqual({ taskId, documentId });
++    expect(retryFactExtractionCalls).toBe(1);
++    expect(backgroundStartCalls).toBe(0);
++    expect(reportGenerationCalls).toBe(0);
++    expect(completeReportCalls).toBe(0);
++  });
++
++  it('guards compatibility replay and rejects malformed or extra DTO fields before extraction', async () => {
++    const taskId = '8154f64c-81e1-4fc4-849f-95cbd4e9ff41';
++    const documentId = '4bb42e77-6428-4af0-9d26-9877ea93e079';
++    const url = `${baseUrl}/openapi/preread/tasks/${taskId}/replay-compatible-extraction`;
++    const unauthenticated = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ documentId }) });
++    expect([401, 403]).toContain(unauthenticated.status);
++    for (const body of [{ documentId: 'bad-id' }, { documentId, fileUrl: 'https://example.test/untrusted' }]) {
++      const response = await fetch(url, { method: 'POST', headers: { authorization: relayAuthorization, 'content-type': 'application/json' }, body: JSON.stringify(body) });
++      expect(response.status).toBe(400);
++    }
++    expect(retryFactExtractionCalls).toBe(0);
++    expect(backgroundStartCalls).toBe(0);
++  });
++
+   it('accepts fact extraction as a background job without waiting for the model', async () => {
+     const taskId =
+       '8154f64c-81e1-4fc4-849f-95cbd4e9ff41';
+diff --git a/server/modules/preread/preread-relay.controller.ts b/server/modules/preread/preread-relay.controller.ts
+index 3aafb29..19dce0a 100644
+--- a/server/modules/preread/preread-relay.controller.ts
++++ b/server/modules/preread/preread-relay.controller.ts
+@@ -55,6 +55,7 @@ import {
+ } from './preread-company-profile.service';
+ import { PrereadHealthService } from './preread-health.service';
+ import { PrereadFactExtractionJobService } from './preread-fact-extraction-job.service';
++import { PrereadParserService } from './preread-parser.service';
+ import { TenderPackageSelectionService } from './tender-engine/tender-package-selection.service';
+ 
+ @Public()
+@@ -73,6 +74,7 @@ export class PrereadRelayController {
+     private readonly companyProfiles: PrereadCompanyProfileService,
+     private readonly health: PrereadHealthService,
+     private readonly packageSelection: TenderPackageSelectionService,
++    private readonly parser: PrereadParserService,
+   ) {}
+ 
+   @Get('health')
+@@ -587,6 +589,20 @@ export class PrereadRelayController {
+     return deliveryTarget ? { deliveryTarget } : {};
+   }
+ 
++  // Operational compatibility repair. Use a cache-only provider for paid-output replay.
++  // The inline parser owns atomic findings/report finalization and retry state guards.
++  @Post('tasks/:taskId/replay-compatible-extraction')
++  async replayCompatibleExtraction(
++    @Param() params: PrereadManualDocumentTaskParamDto,
++    @Body() input: RetryPrereadFactExtractionDto,
++  ) {
++    const extraction = await this.parser.retryFactExtraction(
++      params.taskId,
++      input.documentId,
++    );
++    return { extraction, ...(extraction.report ? { report: extraction.report } : {}) };
++  }
++
+   @Post('tasks/:taskId/retry-fact-extraction')
+   async retryFactExtraction(
+     @Param() params: PrereadManualDocumentTaskParamDto,
+diff --git a/server/modules/preread/preread-structured-metadata.ts b/server/modules/preread/preread-structured-metadata.ts
+index 72e3d0d..31d709d 100644
+--- a/server/modules/preread/preread-structured-metadata.ts
++++ b/server/modules/preread/preread-structured-metadata.ts
+@@ -62,34 +62,43 @@ const normalizeQualification = (
+   value: unknown,
+ ): PrereadQualificationMetadata | undefined => {
+   if (!isRecord(value)) return undefined;
+-  const category = readAllowed(value.category, QUALIFICATION_CATEGORIES);
+-  if (
+-    !category ||
+-    typeof value.mandatory !== 'boolean' ||
+-    typeof value.supplementableBeforeDeadline !== 'boolean'
+-  ) {
++  const category =
++    value.category == null
++      ? 'other'
++      : readAllowed(value.category, QUALIFICATION_CATEGORIES);
++  if (!category) {
+     return undefined;
+   }
+   const minimumRequirement = readString(value.minimumRequirement);
+   const evidenceRequirement = readString(value.evidenceRequirement);
+   return {
+     category,
+-    mandatory: value.mandatory,
+-    supplementableBeforeDeadline: value.supplementableBeforeDeadline,
++    ...(typeof value.mandatory === 'boolean'
++      ? { mandatory: value.mandatory }
++      : {}),
++    ...(typeof value.supplementableBeforeDeadline === 'boolean'
++      ? { supplementableBeforeDeadline: value.supplementableBeforeDeadline }
++      : {}),
+     ...(minimumRequirement ? { minimumRequirement } : {}),
+     ...(evidenceRequirement ? { evidenceRequirement } : {}),
+   };
+ };
+ 
++export const normalizePrereadEvaluationCategory = (
++  value: unknown,
++): PrereadEvaluationMetadata['category'] | undefined => {
++  const aliases: Record<string, PrereadEvaluationMetadata['category']> = {
++    技术: 'technical', 商务: 'commercial', 价格: 'price',
++  };
++  const category = readString(value);
++  return category ? (Object.prototype.hasOwnProperty.call(aliases, category) ? aliases[category] : readAllowed(category, ['technical', 'commercial', 'price'] as const)) : undefined;
++};
++
+ const normalizeEvaluation = (
+   value: unknown,
+ ): PrereadEvaluationMetadata | undefined => {
+   if (!isRecord(value)) return undefined;
+-  const category = readAllowed(value.category, [
+-    'technical',
+-    'commercial',
+-    'price',
+-  ] as const);
++  const category = normalizePrereadEvaluationCategory(value.category);
+   const reviewFocus = readString(value.reviewFocus);
+   if (!category || !reviewFocus) return undefined;
+   const maximumScore = readNonNegative(value.maximumScore);
+@@ -124,22 +133,20 @@ const normalizeRedline = (
+     'qualification',
+     'substantive',
+     'invalid_bid',
++    'unknown',
+   ] as const);
+   const triggerCondition = readString(value.triggerCondition);
+   const consequence = readString(value.consequence);
+-  if (
+-    !category ||
+-    !triggerCondition ||
+-    !consequence ||
+-    typeof value.supplementableBeforeDeadline !== 'boolean'
+-  ) {
++  if (!category || !triggerCondition || !consequence) {
+     return undefined;
+   }
+   return {
+     category,
+     triggerCondition,
+     consequence,
+-    supplementableBeforeDeadline: value.supplementableBeforeDeadline,
++    ...(typeof value.supplementableBeforeDeadline === 'boolean'
++      ? { supplementableBeforeDeadline: value.supplementableBeforeDeadline }
++      : {}),
+   };
+ };
+ 
+@@ -158,7 +165,13 @@ export const normalizePrereadStructuredMetadata = (
+   const basicField =
+     readAllowed(value.basicField, BASIC_FIELDS) ??
+     readAllowed(value.field, BASIC_FIELDS);
+-  const qualification = normalizeQualification(value.qualification);
++  const statement = readString(value.statement);
++  const qualification = normalizeQualification(
++    value.qualification ??
++      (findingType === '资格条件' && statement
++        ? { category: 'other', minimumRequirement: statement }
++        : undefined),
++  );
+   const explicitEvaluation = normalizeEvaluation(value.evaluation);
+   const legacyCommercial = normalizePrereadCommercialMetadata(
+     value.commercial,
+@@ -175,7 +188,16 @@ export const normalizePrereadStructuredMetadata = (
+             : { maximumScore: legacyCommercial.maximumScore }),
+         }
+       : undefined);
+-  const redline = normalizeRedline(value.redline);
++  const redline = normalizeRedline(
++    findingType === '废标风险' && statement
++      ? {
++          category: 'unknown',
++          triggerCondition: statement,
++          consequence: '待核实：原文未单独标注后果',
++          ...(isRecord(value.redline) ? value.redline : {}),
++        }
++      : value.redline,
++  );
+   return {
+     ...(basicField ? { basicField } : {}),
+     ...(qualification ? { qualification } : {}),
+diff --git a/shared/preread.interface.ts b/shared/preread.interface.ts
+index daa5464..912b02f 100644
+--- a/shared/preread.interface.ts
++++ b/shared/preread.interface.ts
+@@ -162,10 +162,10 @@ export type PrereadQualificationCategory =
+ 
+ export interface PrereadQualificationMetadata {
+   category: PrereadQualificationCategory;
+-  mandatory: boolean;
++  mandatory?: boolean;
+   minimumRequirement?: string;
+   evidenceRequirement?: string;
+-  supplementableBeforeDeadline: boolean;
++  supplementableBeforeDeadline?: boolean;
+   bidderMatchStatus?: PrereadBidderMatchStatus;
+ }
+ 
+@@ -180,10 +180,10 @@ export interface PrereadEvaluationMetadata {
+ }
+ 
+ export interface PrereadRedlineMetadata {
+-  category: 'qualification' | 'substantive' | 'invalid_bid';
++  category: 'qualification' | 'substantive' | 'invalid_bid' | 'unknown';
+   triggerCondition: string;
+   consequence: string;
+-  supplementableBeforeDeadline: boolean;
++  supplementableBeforeDeadline?: boolean;
+ }
+ 
+ export type PrereadBidderEvidenceStatus =
+@@ -213,7 +213,7 @@ export interface PrereadCommercialMetadata {
+   materialCategory: PrereadMaterialCategory;
+   responsibleRole: PrereadResponsibleRole;
+   consequence?: string;
+-  supplementableBeforeDeadline: boolean;
++  supplementableBeforeDeadline?: boolean;
+   bidderEvidenceStatus?: PrereadBidderEvidenceStatus;
+ }
+ 
+diff --git a/server/modules/preread/preread-codex-compat.spec.ts b/server/modules/preread/preread-codex-compat.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/server/modules/preread/preread-codex-compat.spec.ts
+@@ -0,0 +1,128 @@
++import {
++  normalizeExtractedFacts,
++  normalizeScoreFacts,
++  mergeExtractedFacts,
++  toFinding,
++} from './preread-parser.service';
++import { buildPrereadKnowledgeReport } from './preread-knowledge-report';
++import { renderPrereadKnowledgeMarkdown } from './preread-knowledge-renderer';
++import { normalizePrereadEvaluationCategory } from './preread-structured-metadata';
++import type { PrereadReportContext } from './preread-report.store';
++
++const record = (page: unknown = '23') => ({
++  statement: '投标人提供有效资质证明',
++  section: '资格审查',
++  quote: '投标人提供有效资质证明。',
++  page,
++  confidence: 0.95,
++});
++const source = {
++  taskId: 'compat-test',
++  documentId: 'doc',
++  fileName: '合成招标文件.pdf',
++  documentVersion: 1,
++  fileUrl: 'https://example.test/document.pdf',
++};
++
++describe('legacy preread records retain uncertainty', () => {
++  it('does not treat inherited object keys as evaluation categories', () => {
++    for (const value of ['constructor', 'toString', '__proto__']) {
++      expect(normalizePrereadEvaluationCategory(value)).toBeUndefined();
++    }
++  });
++  it('preserves unknown score categories and amounts through the real batch merge', () => {
++    const raw = { 评分项: [
++      { ...record(23), evaluation: { category: '价格', maximumScore: 30, weightPercent: 30, reviewFocus: '报价' } },
++      { ...record('23—25'), statement: '主观评分原文', evaluation: { category: '主观分', maximumScore: 40, reviewFocus: '完整性' } },
++      { ...record(25), statement: '未知分值原文' },
++    ], 评分办法: [] };
++    const merged = mergeExtractedFacts([normalizeScoreFacts(raw)]);
++    expect(merged.评分项).toHaveLength(1);
++    const price = toFinding('评分项', merged.评分项[0]!, source);
++    expect(price.evaluation).toMatchObject({ category: 'price', maximumScore: 30, weightPercent: 30 });
++    expect(merged.待确认事项).toHaveLength(2);
++    expect(merged.待确认事项[0]?.section).toContain('主观分');
++    expect(merged.待确认事项[0]?.section).toContain('40');
++    for (const item of merged.待确认事项) {
++      expect(toFinding('待确认事项', item, source).status).toBe('unconfirmed');
++      expect(item.quote).toBe(record().quote);
++    }
++  });
++
++  it('converts a numeric page string and retains range/list locators without inventing a page', () => {
++    const raw = {
++      评分项: [record('23'), record('23—25'), record('23、27')],
++      评分办法: [{ ...record(), page: undefined }],
++    };
++    const original = JSON.stringify(raw);
++    const result = normalizeScoreFacts(raw);
++    expect(result.评分项[0]?.page).toBe(23);
++    for (const item of result.评分项.slice(1)) {
++      expect(item.page).toBeUndefined();
++      expect(item.confidence).toBeLessThan(0.8);
++      expect(String(item.section)).toContain('原始页码');
++      expect(toFinding('评分项', item, source).status).toBe('unconfirmed');
++    }
++    expect(JSON.stringify(raw)).toBe(original);
++  });
++
++  it('does not reject a whole fact category when its sole record has an ambiguous locator', () => {
++    const result = normalizeExtractedFacts({ 项目事实: [record('23—25')] });
++    expect(result.项目事实).toHaveLength(1);
++    expect(result.项目事实[0]?.section).toContain('23—25');
++    expect(result.项目事实[0]?.page).toBeUndefined();
++    expect(result.项目事实[0]?.confidence).toBe(0.79);
++  });
++
++  it('preserves empty-section records as explicitly unlocated and still rejects malformed content', () => {
++    const result = normalizeExtractedFacts({
++      项目事实: [{ ...record(), section: '' }],
++    });
++    expect(result.项目事实[0]?.section).toContain('待核实');
++    expect(result.项目事实[0]?.confidence).toBeLessThan(0.8);
++    expect(() =>
++      normalizeScoreFacts({ 评分项: [{ ...record(), quote: '' }] }),
++    ).toThrow();
++  });
++
++  it('builds report modules from legacy records without turning unknown booleans into false', () => {
++    const findings = ['资格条件', '商务条款', '废标风险'].map(
++      (findingType, i) => {
++        const finding = toFinding(findingType as never, record(23), source);
++        return { id: String(i), findingType, ...finding, ...finding.evidence };
++      },
++    );
++    const context: PrereadReportContext = {
++      task: { id: 'compat', title: '合成测试', priorityLevel: '普通' },
++      document: {
++        id: 'doc',
++        fileName: source.fileName,
++        version: 1,
++        completeTenderDocument: true,
++        parseStatus: 'parsed',
++      },
++      extractionComplete: true,
++      previousFindings: [],
++      manualActions: [],
++      findings,
++    };
++    expect(findings.every((f) => f.status === 'unconfirmed')).toBe(true);
++    expect(findings[0]?.qualification?.mandatory).toBeUndefined();
++    expect(
++      findings[0]?.qualification?.supplementableBeforeDeadline,
++    ).toBeUndefined();
++    expect(
++      findings[1]?.commercial?.supplementableBeforeDeadline,
++    ).toBeUndefined();
++    expect(findings[2]?.redline?.supplementableBeforeDeadline).toBeUndefined();
++    const report = buildPrereadKnowledgeReport(context);
++    expect(report.qualifications).toHaveLength(1);
++    expect(report.redlines).toHaveLength(1);
++    expect(report.redlines[0]?.requiredAction).toContain('待核实');
++    const markdown = renderPrereadKnowledgeMarkdown(report);
++    expect(markdown).toContain('待核实');
++    expect(markdown).not.toContain('当前不可补齐');
++    expect(markdown).not.toContain('当前不可补充');
++    expect(report.recommendation).not.toBe('建议参与');
++  });
++});

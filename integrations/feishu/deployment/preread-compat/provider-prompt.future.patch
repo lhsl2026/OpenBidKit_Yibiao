@@ -1,0 +1,30 @@
+diff --git a/src/model-provider/prompts.ts b/src/model-provider/prompts.ts
+--- a/src/model-provider/prompts.ts
++++ b/src/model-provider/prompts.ts
+@@ -1,11 +1,15 @@
+-export const FACT_EXTRACTION_PROMPT = `你是招标文件预读助手。只从给定原文提取事实，不得补充、推断或编造。每条记录必须包含 statement（结论）、section（章节）、page（页码，无法确定时留空）、quote（原文摘录）、confidence（0 至 1）。低于 0.8 的记录只能作为待确认事项。
+-
+-项目基础信息按 field 标记；采购项目编号、招标编号或采购编号标为 tenderCode，交易项目编号或项目序列号标为 platformProjectCode，两者不得混淆。资格条件必须写明具体证书或资格名称、等级、有效期或年限、数量、人员职称或业绩门槛。评分项必须完整保留得分档位、数量、年限、等级、加分或扣分规则。不得判断投标人已经满足要求。
+-
+-输出一个 JSON 对象，且只允许这些数组字段：项目事实、项目基础信息、资格条件、评分项、技术清单、商务条款、废标风险、待确认事项。所有数组合计最多 24 条，每个数组最多 8 条；项目事实最多 3 条、待确认事项最多 3 条。statement 不超过 100 个字符，section 不超过 40 个字符，quote 不超过 160 个字符。禁止解释、Markdown、注释和省略号。`;
+-
+-export const SCORE_EXTRACTION_PROMPT = `你是投标评审专家。只从给定原文提取评分标准和评标办法，不得补充、推断或编造。输出一个 JSON 对象，只包含“评分项”和“评分办法”两个数组。
+-
+-每个评分项必须包含 statement、section、page、quote、confidence 和 evaluation。evaluation 包含 category、maximumScore、weightPercent、reviewFocus、earningCondition、evidenceRequirement、investmentPriority。earningCondition 必须完整保留每个得分档位、数量、年限、等级、满分上限、加分或扣分规则；evidenceRequirement 必须写明取得该分值要提交的材料。maximumScore 和 weightPercent 只有原文明示时才填写，不得用 0 代替未知。
+-
+-所有数组合计最多 36 条，评分项最多 32 条。禁止解释、Markdown、注释和省略号。`;
++export const FACT_EXTRACTION_PROMPT = `你是招标文件预读助手。只从给定原文提取事实，不得补充、推断或编造。每条记录必须包含 statement（结论）、section（章节）、page（页码，无法确定时留空）、quote（原文摘录）、confidence（0 至 1）。低于 0.8 的记录只能作为待确认事项。
++
++项目基础信息按 field 标记；采购项目编号、招标编号或采购编号标为 tenderCode，交易项目编号或项目序列号标为 platformProjectCode，两者不得混淆。资格条件必须写明具体证书或资格名称、等级、有效期或年限、数量、人员职称或业绩门槛。评分项必须完整保留得分档位、数量、年限、等级、加分或扣分规则。不得判断投标人已经满足要求。
++
++输出一个 JSON 对象，且只允许这些数组字段：项目事实、项目基础信息、资格条件、评分项、技术清单、商务条款、废标风险、待确认事项。所有数组合计最多 24 条，每个数组最多 8 条；项目事实最多 3 条、待确认事项最多 3 条。statement 不超过 100 个字符，section 不超过 40 个字符，quote 不超过 160 个字符。禁止解释、Markdown、注释和省略号。
++
++结构化字段仅填写原文明示的信息。page只填写已确认的正整数单页码；多页、范围或未知页码不填page，把原始定位逐字保留在section，confidence不超过0.79。所有未知boolean、分类、阈值、期限、分数和权重均省略，不以false或0代替未知。资格条件可包含qualification:{category:company|certificate|license|performance|project_manager|technical_lead|personnel|finance_tax_social_credit|consortium_subcontract|other,mandatory:boolean,minimumRequirement:string,evidenceRequirement:string,supplementableBeforeDeadline:boolean}；商务条款可包含commercial:{materialCategory:company|certificate|personnel|performance|manufacturer|service|submission|other,responsibleRole:商务负责人|项目负责人|财务|法务|厂商接口人|投标文件编制人,consequence:string,supplementableBeforeDeadline:boolean}；废标风险可包含redline:{category:qualification|substantive|invalid_bid,triggerCondition:string,consequence:string,supplementableBeforeDeadline:boolean}；评分项可包含evaluation:{category:technical|commercial|price,reviewFocus:string,maximumScore:number,weightPercent:number,earningCondition:string,evidenceRequirement:string,investmentPriority:high|medium|low}。不能将主观分/客观分推断为技术/商务；无法分类时保留原分类供人工核实。描述字段保留原文，不推断投标人是否满足或能否补齐。`;
++
++export const SCORE_EXTRACTION_PROMPT = `你是投标评审专家。只从给定原文提取评分标准和评标办法，不得补充、推断或编造。输出一个 JSON 对象，只包含“评分项”和“评分办法”两个数组。
++
++每个评分项必须包含 statement、section、page、quote、confidence 和 evaluation。evaluation 包含 category、maximumScore、weightPercent、reviewFocus、earningCondition、evidenceRequirement、investmentPriority。earningCondition 必须完整保留每个得分档位、数量、年限、等级、满分上限、加分或扣分规则；evidenceRequirement 必须写明取得该分值要提交的材料。maximumScore 和 weightPercent 只有原文明示时才填写，不得用 0 代替未知。
++
++page只填写已确认的正整数单页码；多页、范围或未知时省略page并将原始定位保留在section，confidence不超过0.79。category仅在原文明示技术、商务、价格时分别填写technical、commercial、price；主观/客观等其他分类保留原分类供人工核实，禁止猜测。未知字段省略，不用false、0或任意分类替代。
++
++所有数组合计最多 36 条，评分项最多 32 条。禁止解释、Markdown、注释和省略号。`;
