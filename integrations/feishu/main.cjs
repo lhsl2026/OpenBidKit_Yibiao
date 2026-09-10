@@ -41,7 +41,7 @@ function deadlineFrom(h) {
   const m = value.match(/^(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?\s+(\d{1,2})[:：](\d{2})(?::(\d{2}))?$/);
   return m ? m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0') + 'T' + m[4].padStart(2, '0') + ':' + m[5] + ':' + (m[6] || '00') + '+08:00' : '';
 }
-function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery } = {}) {
+function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, codexBridgeFactory } = {}) {
   const store = createStore(path.join(config.dataRoot, 'workflow.sqlite3'));
   const snapshotController = new AbortController();
   let snapshot = { records: [], warnings: ['vault_not_configured'] }, snapshotAt = 0, vaultReady = false, rules = [];
@@ -98,13 +98,19 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
   selection = selectionFactory({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership(), onReceipt: (receipt, meta) => documentRecovery.queueReceipt(receipt, meta) });
   const cardSource = cardSourceFactory({ config, workflow, assertOwnership: () => runner.assertOwnership(), clock,
     onAction: (value, event) => value.agent === 'openbidkit-selection' ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event)) });
+  const makeCodexBridge = codexBridgeFactory ?? (args => require('./codex-bridge.cjs').createCodexBridge({
+    ...args, executor: require('./codex-executor.cjs').createCodexExecutor(config.codexBridge)
+  }));
+  const codexBridge = config.codexBridge?.enabled ? makeCodexBridge({
+    config, store, clock, assertOwnership: () => runner.assertOwnership()
+  }) : null;
   function readiness() {
     const missing = [];
     if (!config.companyId) missing.push('company');
     if (!config.apiKey) missing.push('internal_api_key');
     if (!fresh()) missing.push('vault');
     if (!config.mappingsPath) missing.push('ownership_mappings');
-    if (!config.modelConfig.api_key || !config.modelConfig.model_name || !config.modelConfig.base_url) missing.push('model');
+    if (codexBridge ? !codexBridge.status().ready : !config.modelConfig.api_key || !config.modelConfig.model_name || !config.modelConfig.base_url) missing.push('model');
     if (!preread || !config.prereadKey || !config.relayAuthorization) missing.push('preread');
     if (!config.sourceChats.length || !config.sourceSenders.length) missing.push('radar_allowlist');
     if (config.radarPolling?.enabled && config.sourceChats.some(chat=>{const s=store.get('radar-source:'+chat);return !s?.lastSuccessAt||s.error||clock()-s.lastSuccessAt>300000;})) missing.push('radar_source');
@@ -114,14 +120,20 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     return { ready: missing.length === 0, mode: config.mode, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
-  return { store, workflow, runner, cardSource, selection, documentRecovery, server, readiness, refreshEvidence,
+  return { store, workflow, runner, cardSource, selection, documentRecovery, codexBridge, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;
       try {
         cardSource.start();
+        if (codexBridge) await codexBridge.start();
         await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
-      } catch (error) { await cardSource.close(); await runner.close(); throw error; }
+      } catch (error) {
+        await cardSource.close();
+        if (codexBridge) await codexBridge.close();
+        await runner.close();
+        throw error;
+      }
       await refreshEvidence();
       if (closed) return;
       timer = setInterval(() => runner.tick().catch(() => console.error('runner_tick_failed')), 5000);
@@ -132,6 +144,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
       if (closed) return; closed = true;
       clearInterval(timer); clearInterval(refreshTimer); snapshotController.abort();
       await cardSource.close();
+      if (codexBridge) await codexBridge.close();
       await new Promise(r => server.close(r));
       await runner.close(); store.close();
     }

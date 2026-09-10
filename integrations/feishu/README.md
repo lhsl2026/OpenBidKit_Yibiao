@@ -109,6 +109,16 @@ Content-Type: application/octet-stream
 
 ## 运行、恢复与测试
 
+### 使用当前 Codex 登录
+
+设置 `BID_MODEL_BACKEND=codex`、`BID_CODEX_EXECUTABLE`（官方 Codex CLI 绝对路径）、`BID_CODEX_MODEL` 和至少 32 字符的独立 `BID_CODEX_TOKEN`。CLI 应已使用当前用户的 ChatGPT 登录，`codex login status` 成功。默认使用 `gpt-6-astra`、low 推理强度；模型在云端运行，使用账号可用额度，不是离线本地模型。
+
+主进程在取得单实例租约后启动 `127.0.0.1:4383` 适配器，易标编写自动使用这个地址。预读容器使用 [Codex Compose overlay](deployment/codex-model.compose.yml)，通过 `host.docker.internal` 访问同一适配器；仅从私有环境传入 `CODEX_BRIDGE_PORT/TOKEN/MODEL`，保留原 standalone 的 env 文件及能力接口鉴权。此 token 只用于本机服务间鉴权，不是厂商 API Key，不能替代 Codex 登录。
+
+适配器支持现有文本消息、JSON 对象和 SSE 完成事件；SSE 在模型完成后发出完整内容，不提供逐 token 实时显示。`max_tokens` 作为输出长度要求传入，`temperature` 保留在请求去重标识中，CLI 不提供与原 API 完全等价的采样参数。每次使用临时工作目录、只读沙箱、禁用工具/插件/浏览器，并验证结构化结果；不读取或复制登录令牌。
+
+同一请求串行执行，最多四个等待；完成结果缓存 24 小时。运行中断或失败保留去重记录，不能用刷新页面自动再次调用模型。就绪检查包含缓存的 CLI 登录状态；调用失败、额度限制或网络错误仍会如实返回失败。切换回 `BID_MODEL_BACKEND=api` 时需配置原有 `MODEL_PROVIDER_*`，并同步恢复预读容器的上游。
+
 SQLite WAL 持久保存项目、决策、回调去重、雷达收件箱、任务跟踪和投递队列。每日摘要按北京时间去重，服务需持续运行；电脑休眠/关机时不能接收或处理新消息。休眠导致实例租约失效时，服务会停止后续处理；重启服务后继续处理持久队列，运行中断的模型任务仍需人工核对并重试。生产应部署到常开主机，并与现有网关一起维护运行状态。
 
 卡片尽量更新同一个消息。首次发送/文件发送使用稳定 UUID；响应不明且超过保守去重窗口的投递停止自动重发，避免群刷屏，由运维结合飞书消息记录核对。模型执行中断不会自动重复收费调用，卡片提供修复后重试入口。重试前应核查是否已有部分产物。

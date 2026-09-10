@@ -1,0 +1,23 @@
+# Optional final overlay: use the host's authenticated Codex CLI through the local bridge.
+# Keep the original standalone env file; pass only the CODEX_BRIDGE_* values privately.
+services:
+  model-provider:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      MODEL_PROVIDER_BASE_URL: "http://host.docker.internal:${CODEX_BRIDGE_PORT:?set CODEX_BRIDGE_PORT}/v1"
+      MODEL_PROVIDER_API_KEY: "${CODEX_BRIDGE_TOKEN:?set CODEX_BRIDGE_TOKEN}"
+      MODEL_PROVIDER_MODEL: "${CODEX_BRIDGE_MODEL:?set CODEX_BRIDGE_MODEL}"
+      MODEL_PROVIDER_TIMEOUT_MS: "300000"
+  preread-api:
+    environment:
+      CAPABILITY_PROVIDER_TIMEOUT_MS: "300000"
+      PREREAD_DOCUMENT_PARSE_TIMEOUT_MS: "240000"
+      PREREAD_FACT_EXTRACTION_CHUNK_TIMEOUT_MS: "330000"
+      PREREAD_FACT_EXTRACTION_BATCH_TIMEOUT_MS: "1800000"
+  preread-worker:
+    environment:
+      CAPABILITY_PROVIDER_TIMEOUT_MS: "300000"
+      PREREAD_DOCUMENT_PARSE_TIMEOUT_MS: "240000"
+      PREREAD_FACT_EXTRACTION_CHUNK_TIMEOUT_MS: "330000"
+      PREREAD_FACT_EXTRACTION_BATCH_TIMEOUT_MS: "1800000"

@@ -20,6 +20,13 @@ function loadConfig(env=process.env){
  if(config.cardSource.enabled&&(!path.isAbsolute(config.cardSource.cliPath)||!config.cardSource.profile.trim()||!config.chatId||!config.operatorIds.length))throw Error('card_source_not_configured');
  config.documentRecovery={enabled:env.BID_DOCUMENT_RECOVERY_ENABLED==='true',appId:env.BID_MIAODA_APP_ID||'',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_DOCUMENT_CLI_PROFILE||'',root:path.join(config.writingRoot,'sources')};
  if(config.documentRecovery.enabled&&(config.documentRecovery.appId!=='app_17agc8m97f2'||!path.isAbsolute(config.documentRecovery.cliPath)||!config.documentRecovery.profile.trim()||!config.chatId||!config.operatorIds.length||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer ')))throw Error('document_recovery_not_configured');
+ const backend=env.BID_MODEL_BACKEND||'api';if(!['api','codex'].includes(backend))throw Error('model_backend_invalid');
+ config.codexBridge={enabled:backend==='codex',host:'127.0.0.1',port:Number(env.BID_CODEX_PORT||4383),apiKey:env.BID_CODEX_TOKEN||'',executable:env.BID_CODEX_EXECUTABLE||'',model:env.BID_CODEX_MODEL||'gpt-6-astra',reasoningEffort:'low',root:path.join(dataRoot,'codex'),timeoutMs:Number(env.BID_CODEX_TIMEOUT_MS||240000),maxRequestBytes:1024*1024};
+ if(config.codexBridge.enabled){
+  const c=config.codexBridge;
+  if(!path.isAbsolute(c.executable)||c.apiKey.length<32||!Number.isInteger(c.port)||c.port<1||c.port>65535||c.port===config.port||!Number.isInteger(c.timeoutMs)||c.timeoutMs<1000||c.timeoutMs>300000||!/^[A-Za-z0-9._-]{1,128}$/.test(c.model))throw Error('codex_bridge_not_configured');
+  config.modelConfig={provider:'openai',base_url:'http://127.0.0.1:'+c.port+'/v1',api_key:c.apiKey,model_name:c.model};
+ }
  return config;
 }
 module.exports={loadConfig,internalHost};
