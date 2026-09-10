@@ -324,7 +324,7 @@ index 1c467f2..d88c0ee 100644
  
    it('keeps the complete scoring section when it exceeds the business-summary budget', async () => {
 diff --git a/server/modules/preread/preread-parser.service.ts b/server/modules/preread/preread-parser.service.ts
-index 1291a59..83dca6c 100644
+index 1291a59..aae5aab 100644
 --- a/server/modules/preread/preread-parser.service.ts
 +++ b/server/modules/preread/preread-parser.service.ts
 @@ -38,7 +38,7 @@ import {
@@ -461,16 +461,51 @@ index 1291a59..83dca6c 100644
    if (!isRecord(value)) {
      throw new InvalidStructuredOutputError(
        'Invalid bid-fact-extractor output: expected object',
-@@ -1484,7 +1491,7 @@ const normalizeExtractedFacts = (value: unknown): ExtractedPrereadFacts => {
+@@ -1484,7 +1491,42 @@ const normalizeExtractedFacts = (value: unknown): ExtractedPrereadFacts => {
    );
  };
  
 -const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
++// Legacy score producers sometimes return qualitative/missing confidence and page lists.
++// Keep their original values and supplemental source text; never interpret them as a score.
++const normalizeScoreFindingEntry = (value: unknown): Record<string, unknown> | undefined => {
++  if (!isRecord(value)) return undefined;
++  const raw = { ...value };
++  const details: Record<string, unknown> = {};
++  const unknownConfidence = readFiniteNumber(value.confidence) === undefined &&
++    (value.confidence == null || typeof value.confidence === 'string');
++  if (unknownConfidence) {
++    details.confidence = Object.prototype.hasOwnProperty.call(value, 'confidence')
++      ? value.confidence : '未提供';
++    raw.confidence = 0;
++  }
++  if (Array.isArray(value.page)) {
++    details.page = value.page;
++    delete raw.page;
++    const confidence = readFiniteNumber(raw.confidence);
++    if (confidence !== undefined && confidence >= 0 && confidence <= 1) {
++      raw.confidence = Math.min(confidence, 0.79);
++    }
++  }
++  for (const key of ['rule', 'procedure', 'evidenceRequirement']) {
++    if (Object.prototype.hasOwnProperty.call(value, key)) details[key] = value[key];
++  }
++  if (Object.keys(details).length > 0) {
++    const section = readString(value.section);
++    raw.section = `${section ?? '章节待核实'}（原始评分补充字段：${JSON.stringify(details)}${unknownConfidence || Array.isArray(value.page) ? '；待核实' : ''}）`;
++    const confidence = readFiniteNumber(raw.confidence);
++    if (!section && confidence !== undefined && confidence >= 0 && confidence <= 1) {
++      raw.confidence = Math.min(confidence, 0.79);
++    }
++  }
++  return normalizeExtractedFindingEntry(raw);
++};
++
 +export const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
    if (!isRecord(value)) {
      throw new InvalidStructuredOutputError(
        'Invalid bid-score-extractor output: expected object',
-@@ -1494,9 +1501,7 @@ const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
+@@ -1494,9 +1536,7 @@ const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
    const methods = value.评分办法 ?? [];
    if (
      !Array.isArray(scoreItems) ||
@@ -481,23 +516,25 @@ index 1291a59..83dca6c 100644
    ) {
      throw new InvalidStructuredOutputError(
        'Invalid bid-score-extractor output: invalid entries',
-@@ -1505,8 +1510,13 @@ const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
+@@ -1505,8 +1545,15 @@ const normalizeScoreFacts = (value: unknown): ExtractedPrereadFacts => {
    const facts = Object.fromEntries(
      HYDRATED_FINDING_TYPES.map((findingType) => [findingType, []]),
    ) as ExtractedPrereadFacts;
 -  facts.评分项 = scoreItems;
 -  facts.项目事实 = methods;
 +  const normalizeEntries = (entries: unknown[]) => entries.map((entry) => {
-+    const normalized = normalizeExtractedFindingEntry(entry);
++    const normalized = normalizeScoreFindingEntry(entry);
 +    if (!normalized) throw new InvalidStructuredOutputError('Invalid bid-score-extractor output: invalid entries');
 +    return normalized;
 +  });
 +  facts.评分项 = normalizeEntries(scoreItems);
-+  facts.项目事实 = normalizeEntries(methods);
++  const normalizedMethods = normalizeEntries(methods);
++  facts.项目事实 = normalizedMethods.filter(entry => (readNumber(entry.confidence) ?? 0) >= 0.8);
++  facts.待确认事项 = normalizedMethods.filter(entry => (readNumber(entry.confidence) ?? 0) < 0.8);
    return facts;
  };
  
-@@ -1772,7 +1782,7 @@ const isExtractedFindingEntry = (
+@@ -1772,7 +1819,7 @@ const isExtractedFindingEntry = (
      row: value.row as number | undefined,
    });
  
@@ -506,7 +543,7 @@ index 1291a59..83dca6c 100644
    findingType: FindingType,
    raw: Record<string, unknown>,
    context: PrereadParsingContext,
-@@ -1782,17 +1792,22 @@ const toFinding = (
+@@ -1782,17 +1829,22 @@ const toFinding = (
    const sheet = readString(raw.sheet);
    const row = readPositiveInteger(raw.row);
    const commercial = normalizePrereadCommercialMetadata(
@@ -858,7 +895,7 @@ diff --git a/server/modules/preread/preread-codex-compat.spec.ts b/server/module
 new file mode 100644
 --- /dev/null
 +++ b/server/modules/preread/preread-codex-compat.spec.ts
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,164 @@
 +import {
 +  normalizeExtractedFacts,
 +  normalizeScoreFacts,
@@ -886,6 +923,42 @@ new file mode 100644
 +};
 +
 +describe('legacy preread records retain uncertainty', () => {
++  it('keeps qualitative and missing score confidence at zero and preserves supplementary source fields', () => {
++    const qualitative = { ...record(72), confidence: '高（原文残缺）', rule: '合成计分规则原文', evidenceRequirement: '合成证明材料原文' };
++    const missing = { ...record(73), procedure: '合成评审过程原文' } as Record<string, unknown>;
++    delete missing.confidence;
++    const raw = { 评分项: [qualitative], 评分办法: [missing] };
++    const original = JSON.stringify(raw);
++    const result = normalizeScoreFacts(raw);
++    expect(result.评分项[0]?.confidence).toBe(0);
++    expect(result.评分项[0]?.section).toContain('高（原文残缺）');
++    expect(result.评分项[0]?.section).toContain(qualitative.rule);
++    expect(result.评分项[0]?.section).toContain(qualitative.evidenceRequirement);
++    expect(result.待确认事项[0]?.confidence).toBe(0);
++    expect(result.待确认事项[0]?.section).toContain('未提供');
++    expect(result.待确认事项[0]?.section).toContain(missing.procedure);
++    const merged = mergeExtractedFacts([result]);
++    for (const item of [...merged.评分项, ...merged.待确认事项]) {
++      expect(toFinding('待确认事项', item, source).status).toBe('unconfirmed');
++      expect(item.quote).toBe(record().quote);
++    }
++    expect(JSON.stringify(raw)).toBe(original);
++    expect(() => normalizeExtractedFacts({ 项目事实: [qualitative] })).toThrow();
++  });
++
++  it('keeps score page arrays intact as unresolved locators without inventing a single page', () => {
++    const result = normalizeScoreFacts({ 评分办法: [{ ...record(), page: [72, 73], procedure: '原始过程' }] });
++    const item = result.待确认事项[0]!;
++    expect(item.page).toBeUndefined();
++    expect(item.section).toContain('[72,73]');
++    expect(item.section).toContain('原始过程');
++    expect(item.confidence).toBe(0.79);
++    expect(item.quote).toBe(record().quote);
++    for (const confidence of [-1, 2, {}]) {
++      expect(() => normalizeScoreFacts({ 评分项: [{ ...record(), confidence, page: [72, 73] }] })).toThrow();
++    }
++  });
++
 +  it('does not treat inherited object keys as evaluation categories', () => {
 +    for (const value of ['constructor', 'toString', '__proto__']) {
 +      expect(normalizePrereadEvaluationCategory(value)).toBeUndefined();

@@ -51,3 +51,19 @@ node E:/WorkSpaces/OpenBidKit_Yibiao/.worktrees/feishu/integrations/feishu/deplo
 `replay-cache.cjs` opens SQLite read-only and executes actual compiled normalizers, **actual batch merge**, finding conversion, report building and Markdown rendering. It hashes stored cache rows before/after and prints only counts and non-sensitive metadata. `replay-summary.json`: 12 chunks passed; 193 normalized and 193 merged records retained; 21 score records preserved for review; exact price category restored as one 30-point item; report has 12 qualifications, 18 redlines, 31 contract, 3 compliance and 14 delivery/service requirements. Quality remains `待复核`, recommendation `暂缓`. Provider calls: **0**. Raw cache unchanged.
 
 `export-patches.cjs` reproduces the patch/manifest from the isolated dirty consumer checkout and read-only original provider prompt source. It writes only to this compatibility artifact directory.
+
+## LED score-output follow-up
+
+The 19 cache entries created from `2026-09-10T06:19:00Z` had four rejected score chunks: 11 records used qualitative confidence text, 14 score-method records omitted confidence, and two records used page arrays. All statement/quote fields were present; the nine fact chunks already passed.
+
+The compatibility fallback is limited to score output. Missing/null/textual nonnumeric confidence is preserved literally with a `待核实` marker and assigned the conservative numeric lower bound `0`. This does not interpret “高” as a probability. Numeric out-of-range confidence, invalid numeric coordinates, missing statement/quote, and malformed container types still fail. Page arrays remain literal JSON in the source locator, omit a single page, and cap confidence at `0.79`. Supplemental `rule`, `procedure`, and `evidenceRequirement` values remain verbatim in the source section. Unconfirmed score methods move to the manual-review channel. Existing handoff capture and exact-category aliases remain intact.
+
+`led-replay-summary.json` was produced through the real compiled normalizers, batch merge, finding conversion and report builder: **19/19 chunks, 263/263 normalized records**, then **262 merged records plus one exact duplicate** (all fields identical). Eighteen score records remain pending, with no inferred score category or total. Qualifications 14, redlines 15, contract requirements 35, compliance 4, delivery/service 6; recommendation remains `暂缓` and quality `待复核`. Original bridge cache values are unchanged and provider calls remain zero. Parser/compat tests: **95 passed**; standalone build passed.
+
+To reproduce that specific offline assertion, append the cutoff to the existing replay command:
+
+```powershell
+node E:/WorkSpaces/OpenBidKit_Yibiao/.worktrees/feishu/integrations/feishu/deployment/preread-compat/replay-cache.cjs E:/WorkSpaces/preread-codex-compat-20260910 E:/WorkSpaces/OpenBidKit_Yibiao/integrations/feishu/data/workflow.sqlite3 E:/WorkSpaces/OpenBidKit_Yibiao/.worktrees/feishu/integrations/feishu/deployment/preread-compat/led-replay-summary.json 2026-09-10T06:19:00Z
+```
+
+`diagnose-cache.cjs` provides read-only per-chunk schema diagnostics for the same cutoff, printing field types/counts and locator/confidence values rather than private source text.

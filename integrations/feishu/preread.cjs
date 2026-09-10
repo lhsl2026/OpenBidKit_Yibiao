@@ -1,12 +1,12 @@
 function createPrereadClient({baseUrl,apiKey,relayAuthorization,fetchImpl=fetch}){
   const base=new URL(baseUrl);
   if(!['http:','https:'].includes(base.protocol)||base.username||base.password||base.search||base.hash)throw Error('invalid_preread_url');
-  async function request(endpoint,body){
-    if(body&&!relayAuthorization?.startsWith('Bearer '))throw Error('relay_auth_missing');
-    const r=await fetchImpl(base.origin+endpoint,{method:body?'POST':'GET',headers:{authorization:body?relayAuthorization:'Bearer '+apiKey,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),redirect:'error',signal:AbortSignal.timeout(30000)});
+  async function request(endpoint,body,relay=false){
+    if((body||relay)&&!relayAuthorization?.startsWith('Bearer '))throw Error('relay_auth_missing');
+    const r=await fetchImpl(base.origin+endpoint,{method:body?'POST':'GET',headers:{authorization:body||relay?relayAuthorization:'Bearer '+apiKey,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),redirect:'error',signal:AbortSignal.timeout(30000)});
     if(!r.ok)throw Error('preread_unavailable');return r.json();
   }
-  return {getHandoff:taskId=>request('/api/preread/tasks/'+encodeURIComponent(taskId)+'/handoff'),receiveRadar:body=>request('/openapi/preread/events/lark-message',{...body,content:normalizeRadarContent(body.messageType,body.content)}),select:body=>request('/openapi/preread/events/lark-card-action',body)};
+  return {getHandoff:taskId=>request('/api/preread/tasks/'+encodeURIComponent(taskId)+'/handoff'),getPublication:taskId=>request('/openapi/preread/tasks/'+encodeURIComponent(taskId)+'/knowledge-publication',undefined,true),receiveRadar:body=>request('/openapi/preread/events/lark-message',{...body,content:normalizeRadarContent(body.messageType,body.content)}),select:body=>request('/openapi/preread/events/lark-card-action',body)};
 }
 function parsed(content){if(typeof content!=='string')return content;try{return JSON.parse(content);}catch{return null;}}
 function postDocument(content){

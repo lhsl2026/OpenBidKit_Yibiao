@@ -11,6 +11,7 @@ const { createRunner } = require('./runner.cjs');
 const { createCardSource, toWorkflowAction } = require('./card-source.cjs');
 const { createSelection } = require('./selection.cjs');
 const { createDocumentRecovery } = require('./document-recovery.cjs');
+const { createReportArchive } = require('./report-archive.cjs');
 const { isSourceInboxActive } = require('./receipt.cjs');
 const { deadlineFrom, resolveDeadline } = require('./handoff-fields.cjs');
 
@@ -86,11 +87,12 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     job, root: config.writingRoot, electronPath: config.electronPath, clientRoot: config.clientRoot,
     modelConfig: require('./codex-attempt.cjs').writingModelConfig({ config, store, job }), signal
   });
-  let selection, documentRecovery;
+  let selection, documentRecovery, reportArchive;
   const runner = createRunner({ store, config, workflow, preread, lark, write, clock,
     onReceipt: (receipt, meta) => { selection.queue(receipt, meta); documentRecovery.queueReceipt(receipt, meta); },
-    onSourceEdited: inboxId => selection.invalidateInbox(inboxId), onTick: args => documentRecovery.tick(args) });
+    onSourceEdited: inboxId => selection.invalidateInbox(inboxId), onTick: async args => { await documentRecovery.tick(args); await reportArchive.tick(args); } });
   documentRecovery = documentRecoveryFactory({ store, config, clock, assertOwnership: () => runner.assertOwnership(), isSourceActive: job => !job.sourceInboxId || isSourceInboxActive(store, job.sourceInboxId) });
+  reportArchive = createReportArchive({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership() });
   selection = selectionFactory({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership(), onReceipt: (receipt, meta) => documentRecovery.queueReceipt(receipt, meta) });
   const cardSource = cardSourceFactory({ config, workflow, assertOwnership: () => runner.assertOwnership(), clock,
     onAction: (value, event) => value.agent === 'openbidkit-selection' ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event)) });
@@ -116,7 +118,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     return { ready: missing.length === 0, mode: config.mode, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
-  return { store, workflow, runner, cardSource, selection, documentRecovery, codexBridge, server, readiness, refreshEvidence,
+  return { store, workflow, runner, cardSource, selection, documentRecovery, reportArchive, codexBridge, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;

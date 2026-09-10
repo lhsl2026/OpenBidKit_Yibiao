@@ -1,0 +1,165 @@
+{
+  "offline": true,
+  "providerCalls": 0,
+  "rawCacheUnchanged": true,
+  "realMergeExecuted": true,
+  "chunks": [
+    {
+      "cacheSuffix": "f6bd6893bf",
+      "kind": "score",
+      "inputCount": 4,
+      "outputCount": 4,
+      "unknownPage": 3
+    },
+    {
+      "cacheSuffix": "c18ba8626f",
+      "kind": "fact",
+      "inputCount": 19,
+      "outputCount": 19,
+      "unknownPage": 3
+    },
+    {
+      "cacheSuffix": "3b31464af5",
+      "kind": "score",
+      "inputCount": 17,
+      "outputCount": 17,
+      "unknownPage": 6
+    },
+    {
+      "cacheSuffix": "f93a269f4b",
+      "kind": "fact",
+      "inputCount": 21,
+      "outputCount": 21,
+      "unknownPage": 5
+    },
+    {
+      "cacheSuffix": "e6ab775a6c",
+      "kind": "score",
+      "inputCount": 13,
+      "outputCount": 13,
+      "unknownPage": 2
+    },
+    {
+      "cacheSuffix": "8b5b08e13e",
+      "kind": "score",
+      "inputCount": 4,
+      "outputCount": 4,
+      "unknownPage": 3
+    },
+    {
+      "cacheSuffix": "af12565d9b",
+      "kind": "fact",
+      "inputCount": 21,
+      "outputCount": 21,
+      "unknownPage": 2
+    },
+    {
+      "cacheSuffix": "cfec45166c",
+      "kind": "fact",
+      "inputCount": 22,
+      "outputCount": 22,
+      "unknownPage": 7
+    },
+    {
+      "cacheSuffix": "80dcc84316",
+      "kind": "score",
+      "inputCount": 12,
+      "outputCount": 12,
+      "unknownPage": 6
+    },
+    {
+      "cacheSuffix": "0ad1a2ad9c",
+      "kind": "fact",
+      "inputCount": 20,
+      "outputCount": 20,
+      "unknownPage": 2
+    },
+    {
+      "cacheSuffix": "897235e586",
+      "kind": "fact",
+      "inputCount": 22,
+      "outputCount": 22,
+      "unknownPage": 5
+    },
+    {
+      "cacheSuffix": "8805aa8333",
+      "kind": "score",
+      "inputCount": 4,
+      "outputCount": 4,
+      "unknownPage": 2
+    },
+    {
+      "cacheSuffix": "72135a1429",
+      "kind": "fact",
+      "inputCount": 21,
+      "outputCount": 21,
+      "unknownPage": 4
+    },
+    {
+      "cacheSuffix": "b14b5992b1",
+      "kind": "score",
+      "inputCount": 4,
+      "outputCount": 4,
+      "unknownPage": 3
+    },
+    {
+      "cacheSuffix": "4d63e281dc",
+      "kind": "fact",
+      "inputCount": 21,
+      "outputCount": 21,
+      "unknownPage": 4
+    },
+    {
+      "cacheSuffix": "d1014be866",
+      "kind": "score",
+      "inputCount": 0,
+      "outputCount": 0,
+      "unknownPage": 0
+    },
+    {
+      "cacheSuffix": "622ffe38ed",
+      "kind": "fact",
+      "inputCount": 22,
+      "outputCount": 22,
+      "unknownPage": 7
+    },
+    {
+      "cacheSuffix": "d52dba6ea1",
+      "kind": "score",
+      "inputCount": 4,
+      "outputCount": 4,
+      "unknownPage": 0
+    },
+    {
+      "cacheSuffix": "98b4e9b3f7",
+      "kind": "score",
+      "inputCount": 12,
+      "outputCount": 12,
+      "unknownPage": 0
+    }
+  ],
+  "normalizedFindingCount": 263,
+  "totalFindings": 262,
+  "duplicateSourceRecords": [
+    {
+      "count": 2,
+      "differingFields": []
+    }
+  ],
+  "unconfirmedFindings": 189,
+  "pendingScoreRecords": 18,
+  "report": {
+    "qualifications": 14,
+    "redlines": 15,
+    "contractRequirements": 35,
+    "complianceRequirements": 4,
+    "deliveryServiceRequirements": 6,
+    "technicalScores": 0,
+    "commercialScores": 0,
+    "priceScores": 0,
+    "priceScoreValues": [],
+    "qualityStatus": "待复核",
+    "recommendation": "暂缓",
+    "unknownSupplementabilityRendered": true
+  }
+}

@@ -1,6 +1,6 @@
 {
   "consumerBaseCommit": "073580fb496ee5a796329174687afe3912c0f2ff",
-  "consumerPatchSha256": "4b8516a0f094fd10fdffd7658026a718b7db5fed516bf250f8bd6aa98121285e",
+  "consumerPatchSha256": "1c4995c0619cdd9e04260530ddfd018e12837cdd3e9d9eaaa00ae8a8ad523f82",
   "providerOriginalNormalizedSha256": "de39b7e5979f7a7b3293d8118ebbc4f729ad3e3b64a3436acc7ea33434012a60",
   "providerPatchSha256": "93198fa6b7be64301b234c1aa2cdc2923066d4689513d0b56fe5bc8ccafdfd5a",
   "providerPromptPatchDeployed": false
