@@ -70,6 +70,66 @@ index 96a9b4a..f32dca0 100644
      ...(maximumScore === undefined ? {} : { maximumScore }),
      ...(consequence ? { consequence } : {}),
      ...(bidderEvidenceStatus ? { bidderEvidenceStatus } : {}),
+diff --git a/server/modules/preread/preread-handoff.database-store.spec.ts b/server/modules/preread/preread-handoff.database-store.spec.ts
+index c330c7a..238486c 100644
+--- a/server/modules/preread/preread-handoff.database-store.spec.ts
++++ b/server/modules/preread/preread-handoff.database-store.spec.ts
+@@ -1,5 +1,9 @@
+ import type { PrereadHandoffDraft } from './preread-handoff.types';
+ import { PrereadHandoffDatabaseStore } from './preread-handoff.database-store';
++import { PrereadHandoffService } from './preread-handoff.service';
++import { PrereadReportService } from './preread-report.service';
++import { buildPrereadKnowledgeReport } from './preread-knowledge-report';
++import type { PrereadReportContext, PrereadReportRecord } from './preread-report.store';
+ 
+ interface InsertRow {
+   taskId: string;
+@@ -108,6 +112,36 @@ const draft = (title: string): PrereadHandoffDraft => ({
+ });
+ 
+ describe('preread handoff database store', () => {
++  it('captures corrected persisted content as a new version through the real report and handoff services', async () => {
++    const database = new HandoffDatabaseFake();
++    const store = new PrereadHandoffDatabaseStore(database as never);
++    const context: PrereadReportContext = {
++      task: { id: 'task-1', title: '合成报告修正', priorityLevel: '普通' },
++      document: { id: 'doc-3', fileName: 'synthetic.pdf', sha256: 'a'.repeat(64), version: 3, completeTenderDocument: true, parseStatus: 'parsed' },
++      extractionComplete: true, findings: [], previousFindings: [], manualActions: [],
++    };
++    let report: PrereadReportRecord = { id: 'same-report-id', taskId: 'task-1', documentVersion: 3, markdownContent: '# 修正前', knowledgeContent: buildPrereadKnowledgeReport(context) };
++    const reports = { loadContext: async () => context, getLatest: async () => report, save: jest.fn(), replace: jest.fn() };
++    const handoffs = new PrereadHandoffService(store, reports as never);
++    const service = new PrereadReportService(reports as never, {}, undefined, undefined, handoffs);
++    await service.captureFinalizedReport(report);
++    const first = await handoffs.get('task-1');
++    context.findings.push({ id: 'restored-requirement', findingType: '技术清单', status: 'unconfirmed', statement: '合成设备接口不少于24个', section: '技术参数', page: 3, quote: '合成设备接口不少于24个。', confidence: 0.79 });
++    report = { ...report, markdownContent: '# 修正后', knowledgeContent: buildPrereadKnowledgeReport(context) };
++    await service.captureFinalizedReport(report);
++    const second = await handoffs.get('task-1');
++    expect(first.snapshot.reportId).toBe(second.snapshot.reportId);
++    expect(first.snapshot.documentVersion).toBe(second.snapshot.documentVersion);
++    expect(first.snapshot.reportVersion).toBe('r1');
++    expect(second.snapshot.reportVersion).toBe('r2');
++    expect(second.requirements.length).toBeGreaterThan(first.requirements.length);
++    expect(second.requirements.some(item => item.value.includes('合成设备接口'))).toBe(true);
++    expect(first.requirements.some(item => item.value.includes('合成设备接口'))).toBe(false);
++    expect(database.rows[0]?.reportChecksum).not.toBe(database.rows[1]?.reportChecksum);
++    expect(reports.save).not.toHaveBeenCalled();
++    expect(reports.replace).not.toHaveBeenCalled();
++  });
++
+   it('locks the task row without calling unsupported advisory-lock functions', async () => {
+     const database = new HandoffDatabaseFake();
+     const store = new PrereadHandoffDatabaseStore(database as never);
+@@ -127,6 +161,8 @@ describe('preread handoff database store', () => {
+ 
+     expect(first.snapshot.reportVersion).toBe('r1');
+     expect(second.snapshot.reportVersion).toBe('r2');
++    expect(first.snapshot.reportId).toBe(second.snapshot.reportId);
++    expect(first.snapshot.documentVersion).toBe(second.snapshot.documentVersion);
+     expect(database.rows).toHaveLength(2);
+     expect(database.rows[0]?.payload.task.title).toBe('第一次报告');
+     expect(database.rows[1]?.payload.task.title).toBe('第二次报告');
 diff --git a/server/modules/preread/preread-knowledge-renderer.ts b/server/modules/preread/preread-knowledge-renderer.ts
 index 2be8543..86e214c 100644
 --- a/server/modules/preread/preread-knowledge-renderer.ts
@@ -473,10 +533,37 @@ index 1291a59..83dca6c 100644
        : {}),
      ...(commercial ? { commercial } : {}),
 diff --git a/server/modules/preread/preread-relay.controller.spec.ts b/server/modules/preread/preread-relay.controller.spec.ts
-index 1942697..95cdccf 100644
+index 1942697..abc1a71 100644
 --- a/server/modules/preread/preread-relay.controller.spec.ts
 +++ b/server/modules/preread/preread-relay.controller.spec.ts
-@@ -1790,6 +1790,38 @@ describe('PrereadRelayController', () => {
+@@ -88,6 +88,7 @@ describe('PrereadRelayController', () => {
+     | null;
+   let fiveModuleAcceptCalls: unknown[];
+   let retryFactExtractionCalls: number;
++  let finalizedReportCaptures: unknown[];
+   let lastFactExtractionRetry: unknown;
+   let backgroundStartCalls: number;
+   let backgroundClaimCalls: number;
+@@ -160,6 +161,7 @@ describe('PrereadRelayController', () => {
+     reportlessParsedDocument = null;
+     fiveModuleAcceptCalls = [];
+     retryFactExtractionCalls = 0;
++    finalizedReportCaptures = [];
+     lastFactExtractionRetry = undefined;
+     backgroundStartCalls = 0;
+     backgroundClaimCalls = 0;
+@@ -418,6 +420,10 @@ describe('PrereadRelayController', () => {
+         {
+           provide: PrereadReportService,
+           useValue: {
++            captureFinalizedReport: async (report: unknown) => {
++              finalizedReportCaptures.push(report);
++              return report;
++            },
+             generate: async () => {
+               reportGenerationCalls += 1;
+               return latestReportResult;
+@@ -1790,6 +1796,40 @@ describe('PrereadRelayController', () => {
      expect(completeReportCalls).toBe(0);
    });
  
@@ -492,6 +579,7 @@ index 1942697..95cdccf 100644
 +    expect(response.status).toBe(201);
 +    expect(await response.json()).toMatchObject({ extraction: { status: 'completed', findingCount: 12 }, report: latestReportResult });
 +    expect(lastFactExtractionRetry).toEqual({ taskId, documentId });
++    expect(finalizedReportCaptures).toEqual([latestReportResult]);
 +    expect(retryFactExtractionCalls).toBe(1);
 +    expect(backgroundStartCalls).toBe(0);
 +    expect(reportGenerationCalls).toBe(0);
@@ -509,6 +597,7 @@ index 1942697..95cdccf 100644
 +      expect(response.status).toBe(400);
 +    }
 +    expect(retryFactExtractionCalls).toBe(0);
++    expect(finalizedReportCaptures).toEqual([]);
 +    expect(backgroundStartCalls).toBe(0);
 +  });
 +
@@ -516,7 +605,7 @@ index 1942697..95cdccf 100644
      const taskId =
        '8154f64c-81e1-4fc4-849f-95cbd4e9ff41';
 diff --git a/server/modules/preread/preread-relay.controller.ts b/server/modules/preread/preread-relay.controller.ts
-index 3aafb29..19dce0a 100644
+index 3aafb29..ca49d4c 100644
 --- a/server/modules/preread/preread-relay.controller.ts
 +++ b/server/modules/preread/preread-relay.controller.ts
 @@ -55,6 +55,7 @@ import {
@@ -535,7 +624,7 @@ index 3aafb29..19dce0a 100644
    ) {}
  
    @Get('health')
-@@ -587,6 +589,20 @@ export class PrereadRelayController {
+@@ -587,6 +589,23 @@ export class PrereadRelayController {
      return deliveryTarget ? { deliveryTarget } : {};
    }
  
@@ -550,12 +639,60 @@ index 3aafb29..19dce0a 100644
 +      params.taskId,
 +      input.documentId,
 +    );
++    if (extraction.report) {
++      await this.reports.captureFinalizedReport(extraction.report);
++    }
 +    return { extraction, ...(extraction.report ? { report: extraction.report } : {}) };
 +  }
 +
    @Post('tasks/:taskId/retry-fact-extraction')
    async retryFactExtraction(
      @Param() params: PrereadManualDocumentTaskParamDto,
+diff --git a/server/modules/preread/preread-report.service.spec.ts b/server/modules/preread/preread-report.service.spec.ts
+index eca96ce..d675d19 100644
+--- a/server/modules/preread/preread-report.service.spec.ts
++++ b/server/modules/preread/preread-report.service.spec.ts
+@@ -236,6 +236,22 @@ describe('PrereadReportService', () => {
+     ]);
+   });
+ 
++  it('captures the finalized report without preparing, saving or replacing it again', async () => {
++    const store = new InMemoryReportStore();
++    const handoffs = { capture: jest.fn().mockResolvedValue({}) };
++    const service = new PrereadReportService(store, {}, undefined, undefined, handoffs as never);
++    const report = await new PrereadReportService(store, {}).generate('task-1');
++    const prepare = jest.spyOn(service, 'prepare');
++    const save = jest.spyOn(store, 'save');
++    const replace = jest.spyOn(store, 'replace');
++    await expect(service.captureFinalizedReport(report)).resolves.toBe(report);
++    expect(handoffs.capture).toHaveBeenCalledTimes(1);
++    expect(handoffs.capture).toHaveBeenCalledWith(report);
++    expect(prepare).not.toHaveBeenCalled();
++    expect(save).not.toHaveBeenCalled();
++    expect(replace).not.toHaveBeenCalled();
++  });
++
+   it('captures an immutable handoff after the existing report is saved', async () => {
+     const store = new InMemoryReportStore();
+     const handoffs = { capture: jest.fn().mockResolvedValue({}) };
+diff --git a/server/modules/preread/preread-report.service.ts b/server/modules/preread/preread-report.service.ts
+index 000388e..f74a279 100644
+--- a/server/modules/preread/preread-report.service.ts
++++ b/server/modules/preread/preread-report.service.ts
+@@ -861,6 +861,13 @@ export class PrereadReportService {
+     return this.store.markDeliveryRetry(input);
+   }
+ 
++  /** Capture an already committed report without rebuilding or saving it again. */
++  async captureFinalizedReport(
++    report: PrereadReportRecord,
++  ): Promise<PrereadReportRecord> {
++    return this.capture(report);
++  }
++
+   private async capture(
+     report: PrereadReportRecord,
+   ): Promise<PrereadReportRecord> {
 diff --git a/server/modules/preread/preread-structured-metadata.ts b/server/modules/preread/preread-structured-metadata.ts
 index 72e3d0d..31d709d 100644
 --- a/server/modules/preread/preread-structured-metadata.ts

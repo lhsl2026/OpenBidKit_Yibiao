@@ -12,6 +12,7 @@ const { createCardSource, toWorkflowAction } = require('./card-source.cjs');
 const { createSelection } = require('./selection.cjs');
 const { createDocumentRecovery } = require('./document-recovery.cjs');
 const { isSourceInboxActive } = require('./receipt.cjs');
+const { deadlineFrom, resolveDeadline } = require('./handoff-fields.cjs');
 
 function readEvidenceInWorker(config, { signal } = {}) {
   return new Promise((resolve, reject) => {
@@ -32,14 +33,6 @@ function readEvidenceInWorker(config, { signal } = {}) {
     worker.once('error', () => finish(Error('snapshot_unavailable')));
     worker.once('exit', () => { if (!settled) finish(Error('snapshot_unavailable')); });
   });
-}
-function deadlineFrom(h) {
-  const r = h.requirements.find(r => /投标截止|递交.*截止/.test(r.key) && r.requiresConfirmation === false && r.confidence >= 0.8);
-  if (!r) return '';
-  const value = String(r.value).trim();
-  if (/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?(?:Z|[+-]\d\d:\d\d)$/.test(value)) return value;
-  const m = value.match(/^(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?\s+(\d{1,2})[:：](\d{2})(?::(\d{2}))?$/);
-  return m ? m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0') + 'T' + m[4].padStart(2, '0') + ':' + m[5] + ':' + (m[6] || '00') + '+08:00' : '';
 }
 function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, codexBridgeFactory } = {}) {
   const store = createStore(path.join(config.dataRoot, 'workflow.sqlite3'));
@@ -62,7 +55,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     const localSource = store.get('document-source:' + h.task.taskId);
     const checksumMatches = localSource && String(h.snapshot.checksum).replace(/^sha256:/i, '').toLowerCase() === localSource.sha256;
     const handoff = localSource ? { ...h, warnings: [...h.warnings.filter(w => w.code !== 'source_checksum_mismatch'), ...(checksumMatches ? [] : [{ code: 'source_checksum_mismatch', blocked: true }])] } : h;
-    return { ...previous, ...input, handoff, ...(localSource ? { sourcePath: checksumMatches ? localSource.sourcePath : undefined, sourceChecksum: localSource.sha256 } : {}), companyId: config.companyId, deadline: input.deadline ?? previous.deadline ?? deadlineFrom(h), rules: resolvedRules };
+    return { ...previous, ...input, handoff, ...(localSource ? { sourcePath: checksumMatches ? localSource.sourcePath : undefined, sourceChecksum: localSource.sha256 } : {}), companyId: config.companyId, deadline: resolveDeadline(input, previous), rules: resolvedRules };
   };
   const core = createWorkflow({ store, assess, normalizeInput, clock, chatId: config.chatId, operatorIds: config.operatorIds });
   const assertRuntime = () => { if (fenced) runner.assertOwnership(); };

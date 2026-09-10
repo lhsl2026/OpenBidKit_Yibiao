@@ -3,14 +3,15 @@ const md=text=>({tag:'markdown',content:text});
 const group=(elements,color='grey-50')=>({tag:'column_set',flex_mode:'none',background_style:color,columns:[{tag:'column',width:'weighted',weight:1,padding:'8px',elements}]});
 const label={follow:'建议跟进',review:'暂缓，待核实',reject:'不建议投标'};
 const human={follow:'已确认跟进',defer:'暂缓',decline:'不投'};
+const {fieldLabel}=require('./handoff-fields.cjs');
 function explain(code,assessment){const labels=require('./assessment.cjs').ASSESSMENT_LABELS??{};const parts=String(code).split(':');const label=labels[parts.at(-1)]??labels[code]??'该项需要人工核实';const item=assessment.items?.find(i=>i.requirementId===parts[0]);return(item?item.key+'：':'')+label;}
 function baseCard(title,template,elements){return{schema:'2.0',config:{update_multi:true,width_mode:'default',enable_forward:false},header:{title:{tag:'plain_text',content:title.slice(0,120)},template},body:{direction:'vertical',vertical_spacing:'12px',padding:'12px',elements}};}
 function buildCard(p,writing,page=0){
   const h=p.input.handoff,a=p.assessment,decision=a.decision;const cardKey=require('./store.cjs').key(p.input,p.assessment);
   const button=(action,text,type='default',disabled=false)=>({tag:'button',type,text:{tag:'plain_text',content:text},disabled,behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action}}]});
-  const facts=(h.requirements??[]).filter(r=>r.category==='basic').filter(r=>/预算|限价|评标|评审|截止/.test(r.key)).slice(0,4).map(r=>`${escapeText(r.key)}：${escapeText(r.value)}（${escapeText(r.coordinate)}）`);
+  const facts=(h.requirements??[]).filter(r=>r.category==='basic').filter(r=>/预算|限价|评标|评审|截止/.test(fieldLabel(r))).slice(0,4).map(r=>`${escapeText(fieldLabel(r))}：${escapeText(r.value)}（${escapeText(r.coordinate)}）`);
   const requirements=h.requirements??[];const pageCount=Math.max(1,Math.ceil(requirements.length/4));page=Math.max(0,Math.min(pageCount-1,Number.isInteger(page)?page:0));
-  const clauses=requirements.slice(page*4,page*4+4).map(r=>`${escapeText(r.key)}：${escapeText(String(r.value??'').slice(0,900))}${String(r.value??'').length>900?'…（长条款请核对原件）':''}\n来源：${escapeText(r.coordinate||'待核实')}`);
+  const clauses=requirements.slice(page*4,page*4+4).map(r=>`${escapeText(fieldLabel(r))}：${escapeText(String(r.value??'').slice(0,900))}${String(r.value??'').length>900?'…（长条款请核对原件）':''}\n来源：${escapeText(r.coordinate||'待核实')}`);
   const pagination=pageCount>1?[{tag:'button',text:{tag:'plain_text',content:'上一页条款'},disabled:page===0,behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action:'page',page:page-1}}]},{tag:'button',text:{tag:'plain_text',content:'下一页条款'},disabled:page===pageCount-1,behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action:'page',page:page+1}}]}]:[];
   const links=[];for(const [name,url] of [['预读报告',p.input.reportUrl],['招标原文件',p.input.sourceUrl]]){try{const u=new URL(url);if(u.protocol==='https:'&&!u.username&&!u.password)links.push({tag:'button',text:{tag:'plain_text',content:name},behaviors:[{type:'open_url',default_url:u.href}]});}catch{}}
   const writingText=writing?`\n编写进度：${escapeText(({queued:'排队中',running:'处理中',not_ready:'配置未就绪',waiting_confirmation:'等待确认',completed:'初稿已生成',failed:'失败，待处理',interrupted:'上次运行中断，请核对后重试',cancelled:'已取消'})[writing.status]??writing.status)}`:'';
