@@ -103,6 +103,8 @@ Content-Type: application/octet-stream
 
 原台账不含统一的公司归属/人工核实字段，不能把所有记录直接归给当前公司。映射示例见 [ownership-mappings.json](examples/ownership-mappings.json)，仅使用虚构数据。每一条需要 `recordId/companyId/verified/updatedAt/attachments`，每个附件需要 `id/sha256/verified`。记录发生变更、附件缺失、内容变化或证照到截止日失效后重新核实。
 
+运行时刷新保留全部台账记录，但只读取归属映射唯一、公司与更新时间一致且已核实记录中的映射附件。跳过的附件显式标为未检查，记录保持待核实；可用候选附件仍每次核验真实 SHA-256。`readVaultSnapshot` 默认保留完整附件审计模式，后台 Worker 显式启用 `onlyMapped`，避免每分钟扫描全部历史附件导致超时。
+
 规则文件示例见 [rules.json](examples/rules.json)。规则必须准确引用当前版本 handoff 的 requirementId；不把模型自由文本直接当作“已核实满足”。支持证照、业绩和明确人工核实三类。未覆盖的资格和红线自动进入待核实；找不到资料保持待核实，只有已核实不满足或已截止才建议不投。相同持证人不能用重复证照凑人数，相同合同不能用重复记录凑业绩项数。
 
 ## 运行、恢复与测试

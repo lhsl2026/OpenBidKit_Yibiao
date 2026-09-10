@@ -226,6 +226,23 @@ test('real worker loads a read-only SQLite snapshot while the main event loop re
   assert.equal(createHash('sha256').update(fs.readFileSync(databasePath)).digest('hex'), before);
 });
 
+test('real snapshot worker leaves unmapped attachment bytes uninspected', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bid-mapped-snapshot-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const databasePath = path.join(root, 'vault.db');
+  const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(databasePath);
+  const columns = ['id', 'kind', 'name', 'client', 'category', 'amount', 'event_date', 'cert_name', 'specialty', 'level', 'cert_number', 'issued_on', 'expires_on', 'permanent', 'tags', 'notes', 'updated_at'];
+  db.exec('CREATE TABLE records (' + columns.map(k => k + ' TEXT').join(',') + '); CREATE TABLE attachments(id TEXT,record_id TEXT,name TEXT,relative_path TEXT,sha256 TEXT,position INTEGER)');
+  db.prepare('INSERT INTO records (' + columns.join(',') + ') VALUES (' + columns.map(() => '?').join(',') + ')').run('unmapped', 'certificate', 'Unmapped', '', '', '', '', '', '', '', '', '', '', '', '', '', '2026-09-10T00:00:00Z');
+  db.prepare('INSERT INTO attachments VALUES (?, ?, ?, ?, ?, ?)').run('missing-att', 'unmapped', 'missing.pdf', 'missing.pdf', 'a'.repeat(64), 0);
+  db.close();
+
+  const value = await readEvidenceInWorker({ databasePath, filesRoot: root, companyId: 'c' });
+  const attachment = value.snapshot.records[0].attachments[0];
+  assert.equal(attachment.actualSha256, null);
+  assert.ok(attachment.verificationIssues.includes('attachment_not_inspected'));
+  assert.ok(!attachment.verificationIssues.includes('attachment_missing'));
+});
+
 test('reconfirming a project after evidence revocation can explicitly regenerate its cancelled delivery', async t => {
   const f = fixture(t); f.enqueue(); const job = f.store.listWriting()[0];
   f.store.updateWriting(job.id, 'completed', { status: 'completed', artifacts: [] }, Date.now());

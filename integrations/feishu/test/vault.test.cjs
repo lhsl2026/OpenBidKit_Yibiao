@@ -157,6 +157,25 @@ function loadVaultWithWholeAttachmentReadsBlocked(attachmentPaths) {
   }
 }
 
+function loadVaultWithAttachmentOpensTracked(blockedPaths = []) {
+  const fs = require('node:fs');
+  const originalOpenSync = fs.openSync;
+  const blocked = new Set(blockedPaths.map(file => path.resolve(file)));
+  const opened = [];
+  fs.openSync = (file, ...args) => {
+    const resolved = path.resolve(String(file));
+    opened.push(resolved);
+    if (blocked.has(resolved)) throw new Error('attachment_open_forbidden');
+    return originalOpenSync(file, ...args);
+  };
+  try {
+    delete require.cache[require.resolve('../vault.cjs')];
+    return { vaultModule: require('../vault.cjs'), opened };
+  } finally {
+    fs.openSync = originalOpenSync;
+  }
+}
+
 test('reads a manually verified company record without changing the source database', () => {
   const record = certificate();
   const vault = createVault([record]);
@@ -269,4 +288,91 @@ test('verifies a multi-block JPEG from its header and final bytes without whole-
 
   assert.equal(snapshot.records[0].verified, true);
   assert.equal(snapshot.records[0].attachments[0].actualSha256, sha256(bytes));
+});
+
+test('onlyMapped inspects only eligible mapped attachments while retaining every record and attachment', () => {
+  const eligible = certificate({
+    id: 'eligible',
+    attachments: [
+      { id: 'eligible-mapped', bytes: Buffer.from('%PDF-1.4\nMapped\n%%EOF') },
+      { id: 'eligible-unmapped', bytes: Buffer.from('%PDF-1.4\nUnmapped\n%%EOF') },
+    ],
+  });
+  const unmapped = certificate({ id: 'unmapped', attachments: [{ id: 'unmapped-att', bytes: Buffer.from('%PDF-1.4\nUnmapped record\n%%EOF') }] });
+  const otherCompany = certificate({ id: 'other-company', attachments: [{ id: 'other-att', bytes: Buffer.from('%PDF-1.4\nOther company\n%%EOF') }] });
+  const stale = certificate({ id: 'stale', attachments: [{ id: 'stale-att', bytes: Buffer.from('%PDF-1.4\nStale\n%%EOF') }] });
+  const vault = createVault([eligible, unmapped, otherCompany, stale]);
+  const file = id => path.join(vault.filesRoot, 'files', `${id}.pdf`);
+  const blocked = [file('eligible-unmapped'), file('unmapped-att'), file('other-att'), file('stale-att')];
+  const tracked = loadVaultWithAttachmentOpensTracked(blocked);
+  const eligibleMapping = verifiedMapping(eligible, {
+    attachments: [{
+      id: 'eligible-mapped',
+      sha256: sha256(eligible.attachments[0].bytes),
+      verified: true,
+    }],
+  });
+
+  const snapshot = tracked.vaultModule.readVaultSnapshot({
+    databasePath: vault.databasePath,
+    filesRoot: vault.filesRoot,
+    mappings: [
+      eligibleMapping,
+      verifiedMapping(otherCompany, { companyId: 'another-company' }),
+      verifiedMapping(stale, { updatedAt: '2026-09-01T00:00:00' }),
+    ],
+    companyId: 'company-lc',
+    onlyMapped: true,
+  });
+
+  assert.equal(snapshot.records.length, 4);
+  assert.deepEqual(tracked.opened, [file('eligible-mapped')]);
+  const byId = Object.fromEntries(snapshot.records.map(record => [record.id, record]));
+  assert.equal(byId.eligible.attachments[0].verified, true);
+  assert.equal(byId.eligible.attachments[1].verified, false);
+  assert.equal(byId.eligible.attachments[1].actualSha256, null);
+  assert.ok(byId.eligible.attachments[1].verificationIssues.includes('attachment_not_inspected'));
+  assert.ok(byId.eligible.attachments[1].verificationIssues.includes('attachment_mapping_missing'));
+  for (const id of ['unmapped', 'other-company', 'stale']) {
+    assert.equal(byId[id].verified, false);
+    assert.equal(byId[id].attachments[0].verified, false);
+    assert.equal(byId[id].attachments[0].actualSha256, null);
+    assert.ok(byId[id].attachments[0].verificationIssues.includes('attachment_not_inspected'));
+  }
+  assert.equal(snapshot.warnings.length, 4);
+});
+
+test('onlyMapped still hashes an eligible mapped attachment and rejects changed bytes', () => {
+  const record = certificate({ id: 'mapped-changed' });
+  const vault = createVault([record]);
+  writeFileSync(path.join(vault.filesRoot, 'files', 'att-1.pdf'), Buffer.from('%PDF-1.4\nChanged\n%%EOF'));
+
+  const snapshot = readVaultSnapshot({
+    databasePath: vault.databasePath,
+    filesRoot: vault.filesRoot,
+    mappings: [verifiedMapping(record)],
+    companyId: 'company-lc',
+    onlyMapped: true,
+  });
+
+  const attachment = snapshot.records[0].attachments[0];
+  assert.equal(attachment.verified, false);
+  assert.notEqual(attachment.actualSha256, attachment.sha256);
+  assert.ok(attachment.verificationIssues.includes('attachment_hash_mismatch'));
+  assert.ok(!attachment.verificationIssues.includes('attachment_not_inspected'));
+});
+
+test('default audit mode continues to inspect attachments without mappings', () => {
+  const record = certificate({ id: 'audit-unmapped' });
+  const vault = createVault([record]);
+  const snapshot = readVaultSnapshot({
+    databasePath: vault.databasePath,
+    filesRoot: vault.filesRoot,
+    mappings: [],
+    companyId: 'company-lc',
+  });
+  const attachment = snapshot.records[0].attachments[0];
+  assert.equal(attachment.actualSha256, attachment.sha256);
+  assert.ok(attachment.verificationIssues.includes('attachment_mapping_missing'));
+  assert.ok(!attachment.verificationIssues.includes('attachment_not_inspected'));
 });

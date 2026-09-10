@@ -6,7 +6,7 @@ const json = (file, fallback) => file ? JSON.parse(readFileSync(file, 'utf8')) :
 try {
   const rules = json(workerData.rulesPath, []);
   if (!Array.isArray(rules)) throw Error('rules_invalid');
-  const snapshot = readVaultSnapshot({ ...workerData, mappings: json(workerData.mappingsPath, []) });
+  const snapshot = readVaultSnapshot({ ...workerData, mappings: json(workerData.mappingsPath, []), onlyMapped: true });
   parentPort.postMessage({ ok: true, value: { snapshot, rules } });
 } catch {
   parentPort.postMessage({ ok: false });

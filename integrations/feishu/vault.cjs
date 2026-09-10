@@ -146,29 +146,33 @@ function indexMappings(mappings) {
   return { indexed, duplicates };
 }
 
-function inspectAttachment({ attachment, filesRoot, mappedAttachment }) {
+function inspectAttachment({ attachment, filesRoot, mappedAttachment, inspectFile = true }) {
   const issues = [];
-  const candidate = path.resolve(filesRoot, attachment.relative_path);
   let actualSha256 = null;
   let supportedSignature = false;
 
-  if (!isInside(filesRoot, candidate)) {
-    issues.push('attachment_path_outside_root');
+  if (!inspectFile) {
+    issues.push('attachment_not_inspected');
   } else {
-    try {
-      const actualPath = realpathSync.native(candidate);
-      if (!isInside(filesRoot, actualPath)) {
-        issues.push('attachment_path_outside_root');
-      } else {
-        const inspection = inspectAttachmentFile(
-          attachment.relative_path || attachment.name,
-          actualPath,
-        );
-        actualSha256 = inspection.actualSha256;
-        supportedSignature = inspection.supportedSignature;
+    const candidate = path.resolve(filesRoot, attachment.relative_path);
+    if (!isInside(filesRoot, candidate)) {
+      issues.push('attachment_path_outside_root');
+    } else {
+      try {
+        const actualPath = realpathSync.native(candidate);
+        if (!isInside(filesRoot, actualPath)) {
+          issues.push('attachment_path_outside_root');
+        } else {
+          const inspection = inspectAttachmentFile(
+            attachment.relative_path || attachment.name,
+            actualPath,
+          );
+          actualSha256 = inspection.actualSha256;
+          supportedSignature = inspection.supportedSignature;
+        }
+      } catch {
+        issues.push('attachment_missing');
       }
-    } catch {
-      issues.push('attachment_missing');
     }
   }
 
@@ -200,7 +204,7 @@ function inspectAttachment({ attachment, filesRoot, mappedAttachment }) {
   };
 }
 
-function readVaultSnapshot({ databasePath, filesRoot, mappings = [], companyId }) {
+function readVaultSnapshot({ databasePath, filesRoot, mappings = [], companyId, onlyMapped = false }) {
   if (typeof databasePath !== 'string' || databasePath.length === 0) {
     throw new TypeError('databasePath is required');
   }
@@ -209,6 +213,9 @@ function readVaultSnapshot({ databasePath, filesRoot, mappings = [], companyId }
   }
   if (typeof companyId !== 'string' || companyId.length === 0) {
     throw new TypeError('companyId is required');
+  }
+  if (typeof onlyMapped !== 'boolean') {
+    throw new TypeError('onlyMapped must be a boolean');
   }
 
   const root = realpathSync.native(path.resolve(filesRoot));
@@ -268,11 +275,16 @@ function readVaultSnapshot({ databasePath, filesRoot, mappings = [], companyId }
         }
       }
     }
+    const recordCanBeVerified = !duplicates.has(row.id)
+      && mapping?.verified === true
+      && mapping.companyId === companyId
+      && mapping.updatedAt === row.updated_at;
     const attachments = (attachmentsByRecordId.get(row.id) ?? []).map((attachment) =>
       inspectAttachment({
         attachment,
         filesRoot: root,
         mappedAttachment: mappedAttachments.get(attachment.id),
+        inspectFile: !onlyMapped || (recordCanBeVerified && mappedAttachments.has(attachment.id)),
       }),
     );
     if (attachments.length === 0) {

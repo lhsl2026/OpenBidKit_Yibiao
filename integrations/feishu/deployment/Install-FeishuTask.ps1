@@ -1,13 +1,17 @@
 [CmdletBinding()]
-param([string]$NodePath, [string]$EnvironmentFile, [string]$DataRoot, [switch]$StartDocker)
+param([string]$NodePath, [string]$EnvironmentFile, [string]$DataRoot, [switch]$StartDocker, [string]$PowerShellPath)
 . (Join-Path $PSScriptRoot 'Process-Feishu.ps1')
 $context = Get-FeishuContext -NodePath $NodePath -EnvironmentFile $EnvironmentFile -DataRoot $DataRoot
 $taskName = 'OpenBidKitFeishu'
 $startPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'Start-Feishu.ps1')).Path
-$shellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if (-not $PowerShellPath) { $PowerShellPath = (Get-Process -Id $PID -ErrorAction Stop).Path }
+if ($PowerShellPath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+[\\/])') { throw 'PowerShellPath must be an absolute executable path.' }
+if (-not (Test-Path -LiteralPath $PowerShellPath -PathType Leaf)) { throw 'PowerShell executable was not found.' }
+$shellPath = (Resolve-Path -LiteralPath $PowerShellPath -ErrorAction Stop).ProviderPath
+if ([IO.Path]::GetFileName($shellPath) -notin @('powershell.exe', 'pwsh.exe')) { throw 'PowerShellPath must name powershell.exe or pwsh.exe.' }
 if (-not $EnvironmentFile) { $EnvironmentFile = Join-Path $context.IntegrationRoot '.env' }
 $environmentPath = [IO.Path]::GetFullPath($EnvironmentFile)
-foreach ($value in @($startPath, $context.executable, $environmentPath, $context.dataRoot)) {
+foreach ($value in @($shellPath, $startPath, $context.executable, $environmentPath, $context.dataRoot)) {
     if ($value.Contains('"') -or $value.Contains("`r") -or $value.Contains("`n")) { throw 'Unsupported task argument.' }
 }
 $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "{0}" -NodePath "{1}" -EnvironmentFile "{2}" -DataRoot "{3}"' -f $startPath, $context.executable, $environmentPath, $context.dataRoot

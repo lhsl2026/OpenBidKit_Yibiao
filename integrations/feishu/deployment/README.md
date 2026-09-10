@@ -1,6 +1,6 @@
 # 飞书服务监管（Windows）
 
-`supervisor.cjs` 只监管本目录的 `main.cjs`，不修改业务数据。需要 Node.js 22.13+、Windows PowerShell，以及已配置的私有 `.env`。登录启动由独立的 `Install-FeishuTask.ps1` 注册。
+`supervisor.cjs` 只监管本目录的 `main.cjs`，不修改业务数据。需要 Node.js 22.13+、允许执行这些脚本的 Windows PowerShell 或 PowerShell 7，以及已配置的私有 `.env`。登录启动由独立的 `Install-FeishuTask.ps1` 注册。
 
 ## 启动与停止
 
@@ -77,7 +77,9 @@ Start-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'
 Get-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'
 ```
 
-这会注册当前用户登录时运行的 `\OpenBidKitFeishu`，使用有限权限、交互登录身份，不保存密码。固定 PowerShell 路径加 `-WindowStyle Hidden` 隐藏窗口；同数据根禁止并行实例，失败每分钟重试、最多三次，业务进程由监管器负责恢复。同名任务的动作、身份、触发器或关键设置不匹配时拒绝覆盖。
+这会注册当前用户登录时运行的 `\OpenBidKitFeishu`，使用有限权限、交互登录身份，不保存密码。安装器默认记录本次运行它的 PowerShell 可执行文件绝对路径；也可传入 `-PowerShellPath 'C:/Program Files/PowerShell/7/pwsh.exe'` 明确指定已有可用的 shell，只接受 `powershell.exe` 或 `pwsh.exe`。它不修改执行策略，也不添加策略绕过参数；选定的 shell 应已能执行这些脚本。
+
+登记的 shell 使用 `-WindowStyle Hidden` 隐藏窗口；同数据根禁止并行实例，失败每分钟重试、最多三次，业务进程由监管器负责恢复。同名任务的动作（包括 shell 路径）、身份、触发器或关键设置不匹配时拒绝覆盖，不会自动迁移已有任务。已有错误动作需经核验后单独修正。
 
 `-StartDocker` 适用于本机预读依赖 Docker Desktop 的部署：先隐藏启动已安装的官方 Docker Desktop，再启动服务；既有容器按照其 restart policy 恢复，预读连接暂不可用时收件箱保留重试。本选项不修改 Docker 的全局自动启动设置，远程预读部署可省略。注销、主机关机或休眠期间不能保证运行；全天无人值守需要迁移到常开主机。
 
