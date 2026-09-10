@@ -1,0 +1,7 @@
+# Optional final overlay for the separately built, reviewed preread consumer patch.
+# The original standalone environment file and database are retained.
+services:
+  preread-api:
+    image: "${PREREAD_COMPAT_IMAGE:?set PREREAD_COMPAT_IMAGE}"
+  preread-worker:
+    image: "${PREREAD_COMPAT_IMAGE:?set PREREAD_COMPAT_IMAGE}"

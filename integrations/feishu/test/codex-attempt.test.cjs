@@ -20,3 +20,14 @@ test('registered writing attempts allow explicit retry while automatic repeats s
   assert.equal((await post(retry.base_url)).status, 200); assert.equal(calls, 2);
   assert.equal((await post(first.base_url)).status, 409);
 });
+test('cache-only recovery never starts execution, including an expired or missing entry', async t => {
+ const store = new Map(), token = 't'.repeat(48); let calls=0, now=1000;
+ const bridge=createCodexBridge({config:{codexBridge:{enabled:true,host:'127.0.0.1',port:0,apiKey:token,model:'gpt-6-astra'}},store,clock:()=>now,executor:{authStatus:async()=>true,run:async()=>{calls++;return 'retained';}}});
+ await bridge.start();t.after(()=>bridge.close());const base='http://127.0.0.1:'+bridge.server.address().port;
+ const post=route=>fetch(base+route+'/chat/completions',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({model:'gpt-6-astra',messages:[{role:'user',content:'recovery-fixture'}]})});
+ assert.equal((await post('/v1/cache-only')).status,409);assert.equal(calls,0);
+ assert.equal((await post('/v1')).status,200);assert.equal(calls,1);
+ assert.equal((await post('/v1/cache-only')).status,200);assert.equal(calls,1);
+ now+=24*60*60*1000+1;
+ assert.equal((await post('/v1/cache-only')).status,409);assert.equal(calls,1);
+});

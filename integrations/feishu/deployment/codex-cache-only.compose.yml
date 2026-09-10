@@ -1,0 +1,6 @@
+# Temporary recovery overlay: use only retained completions; cache misses never call Codex.
+# Remove this overlay after the explicit compatibility replay finishes.
+services:
+  model-provider:
+    environment:
+      MODEL_PROVIDER_BASE_URL: "http://host.docker.internal:${CODEX_BRIDGE_PORT:?set CODEX_BRIDGE_PORT}/v1/cache-only"

@@ -142,10 +142,14 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
     })();
     executions.add(execution); execution.finally(() => executions.delete(execution));
   }
-  function getJob(payload) {
+  function getJob(payload, cacheOnly = false) {
     owned();
     const requestHash = hash(JSON.stringify(payload));
-    const existing = jobs.get(requestHash); if (existing) return existing;
+    const existing = jobs.get(requestHash);
+    if (existing) {
+      if (cacheOnly) throw failure(409, 'execution_pending');
+      return existing;
+    }
     const saved = store.get(PREFIX + requestHash);
     if (saved) {
       if (saved.state === 'running') throw failure(409, 'execution_uncertain');
@@ -154,6 +158,7 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
       if (contentIssue(saved.content, payload.responseFormat)) throw failure(409, 'cache_invalid');
       if (saved.expiresAt > clock()) return { clients: 0, settled: true, promise: Promise.resolve({ content: saved.content, id: 'chatcmpl-' + requestHash, created: Math.floor(saved.createdAt / 1000) }) };
     }
+    if (cacheOnly) throw failure(409, 'cache_miss');
     if ((active ? 1 : 0) + queue.length >= 5) throw failure(429, 'queue_full');
     let resolve, reject;
     const promise = new Promise((accept, fail) => { resolve = accept; reject = fail; });
@@ -195,14 +200,15 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
       }
       if (request.method === 'GET' && pathname === '/v1/models') { json(response, 200, { object: 'list', data: [{ id: options.model, object: 'model', owned_by: 'local-codex' }] }); return; }
       const scoped = pathname.match(/^\/v1\/attempts\/([a-f0-9]{64})\/chat\/completions$/);
-      if (request.method !== 'POST' || (pathname !== '/v1/chat/completions' && !scoped)) throw failure(404, 'not_found');
+      const cacheOnly = pathname === '/v1/cache-only/chat/completions';
+      if (request.method !== 'POST' || (pathname !== '/v1/chat/completions' && !scoped && !cacheOnly)) throw failure(404, 'not_found');
       if (scoped && !store.get('codex-attempt:' + scoped[1])) throw failure(403, 'attempt_not_authorized');
       if (!(await refreshAuth())) throw failure(503, 'codex_auth_unavailable');
       const body = await readBody(request);
       owned(); if (closed) throw failure(503, 'bridge_closed');
       if (response.destroyed || request.aborted) return;
       const payload = normalize(body, options.model);
-      job = getJob(scoped ? { ...payload, attemptScope: scoped[1] } : payload); job.clients++;
+      job = getJob(scoped ? { ...payload, attemptScope: scoped[1] } : payload, cacheOnly); job.clients++;
       const result = await job.promise;
       completion(response, result, body.stream === true);
     } catch (error) { respondError(response, error); }
