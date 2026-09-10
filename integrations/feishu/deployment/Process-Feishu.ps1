@@ -1,6 +1,14 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function ConvertFrom-FeishuJson {
+    param([string]$Json)
+    if ((Get-Command ConvertFrom-Json -ErrorAction Stop).Parameters.ContainsKey('DateKind')) {
+        return ConvertFrom-Json -InputObject $Json -DateKind String
+    }
+    return ConvertFrom-Json -InputObject $Json
+}
+
 function Get-FeishuContext {
     param([string]$DataRoot, [string]$EnvironmentFile, [string]$NodePath)
     $integrationRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -14,7 +22,7 @@ function Get-FeishuContext {
     if ($DataRoot) { $describeArguments += @('--data-root', [IO.Path]::GetFullPath($DataRoot)) }
     $description = & $nodeExecutable @describeArguments
     if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve Feishu supervisor configuration.' }
-    $context = $description | ConvertFrom-Json
+    $context = ConvertFrom-FeishuJson -Json ($description -join "`n")
     if ($context.executable -ine $nodeExecutable -or $context.supervisorPath -ine $supervisorPath) { throw 'Unexpected supervisor installation.' }
     $context | Add-Member -NotePropertyName Arguments -NotePropertyValue $arguments
     $context | Add-Member -NotePropertyName IntegrationRoot -NotePropertyValue $integrationRoot
@@ -36,7 +44,7 @@ function Test-FeishuProcess {
 function Read-FeishuState {
     param($Context)
     if (-not (Test-Path -LiteralPath $Context.pidFile -PathType Leaf)) { return $null }
-    $state = Get-Content -LiteralPath $Context.pidFile -Raw | ConvertFrom-Json
+    $state = ConvertFrom-FeishuJson -Json (Get-Content -LiteralPath $Context.pidFile -Raw)
     if ($state.dataRoot -ine $Context.dataRoot -or $state.supervisorPath -ine $Context.supervisorPath -or $state.childPath -ine $Context.mainPath -or $state.executable -ine $Context.executable) {
         throw 'PID metadata does not belong to this installation; no process was stopped.'
     }
@@ -48,5 +56,5 @@ function Invoke-FeishuControl {
     $arguments = $Context.Arguments + @($Command, '--data-root', $Context.dataRoot)
     $result = & $Context.executable @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Supervisor control request failed.' }
-    return $result | ConvertFrom-Json
+    return ConvertFrom-FeishuJson -Json ($result -join "`n")
 }
