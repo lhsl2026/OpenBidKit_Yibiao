@@ -67,3 +67,13 @@ node E:/WorkSpaces/OpenBidKit_Yibiao/.worktrees/feishu/integrations/feishu/deplo
 ```
 
 `diagnose-cache.cjs` provides read-only per-chunk schema diagnostics for the same cutoff, printing field types/counts and locator/confidence values rather than private source text.
+
+## Partial compatibility reports
+
+The inline replay explicitly enables `persistIncompleteReport`. If every chunk normalizes successfully and findings are nonempty, but the completeness check still identifies missing categories, the same transaction replaces the recovered findings and report while keeping the task and document extraction `partial`. The report remains `部分结果` / `待复核`, includes the missing-category warning and recovered manual-review records, and is captured into a fresh handoff revision. No score classification or completeness requirement is relaxed. Ordinary retries, failed chunks, empty output and unavailable/failed report preparation retain the prior abort behavior.
+
+Calling `reports.regenerate(taskId)` alone cannot recover discarded findings: it reads the stored findings. The compatibility path supplies the recovered findings to report preparation, then commits them with the report. Preparation explicitly uses the current recovery evidence so stale complete context or previous failed-chunk metadata cannot mislabel the new report. All preparation/company matching uses stored profiles and deterministic report generation; no added model call is involved.
+
+The regression uses the real inline parser, score normalization, merge, report service and database persistence class with a synthetic transactional database. It verifies unknown-category/qualitative-confidence score recovery, unchanged completeness failure, stored findings, report visibility, and a rollback of both findings/report when the status write fails. The offline LED summary above validates normalization/merge/report content; it is not evidence that a live inline replay has committed these changes.
+
+Final focused verification for this follow-up: parser persistence, parser service, report service, compatibility and relay controller suites **207 passed / 5 suites**, standalone Nest build passed, and exported `consumer.patch` passed reverse application checking against the isolated checkout. No live replay or model invocation was performed for this follow-up.

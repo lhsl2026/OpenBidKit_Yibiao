@@ -285,10 +285,198 @@ index 65b90ed..38e7ced 100644
        ],
      },
      versionChanges: buildPrereadVersionChanges(context),
+diff --git a/server/modules/preread/preread-parser.persistence.spec.ts b/server/modules/preread/preread-parser.persistence.spec.ts
+index 5e6e33a..ecf8333 100644
+--- a/server/modules/preread/preread-parser.persistence.spec.ts
++++ b/server/modules/preread/preread-parser.persistence.spec.ts
+@@ -10,6 +10,8 @@ import {
+   PrereadParserService,
+   PrereadPersistenceError,
+ } from './preread-parser.service';
++import { PrereadReportService } from './preread-report.service';
++import type { PrereadReportContext } from './preread-report.store';
+ 
+ type Operation = {
+   kind: 'delete' | 'insert' | 'update';
+@@ -49,12 +51,14 @@ class TransactionalDatabaseFake {
+     this.transactionCount += 1;
+     const before = this.operations.length;
+     const taskStatus = this.taskStatus;
++    const findingCount = this.findingCount;
+     const documentRow = structuredClone(this.documentRow);
+     try {
+       return await work(this);
+     } catch (error) {
+       this.operations.splice(before);
+       this.taskStatus = taskStatus;
++      this.findingCount = findingCount;
+       this.documentRow = documentRow;
+       this.rolledBack = true;
+       throw error;
+@@ -238,6 +242,87 @@ const commercialFinding: PrereadFinding = {
+ };
+ 
+ describe('PrereadParserDatabasePersistence', () => {
++  it.each([false, true])('keeps the completeness gate while publishing recovered partial findings only in compatibility mode (%s)', async (compatibility) => {
++    const database = new TransactionalDatabaseFake();
++    database.taskStatus = 'partial';
++    database.findingCount = 1;
++    database.documentRow.metadata = {
++      ...database.documentMetadata,
++      parsedText: '# 评标办法\n综合评分法。',
++      parserFailure: { stage: 'fact_extraction', reason: 'invalid_structured_output' },
++      extraction: { status: 'partial', failedChunkCount: 1 },
++    };
++    const cachedRecord = {
++      statement: '恢复的合成评分条款', section: '评标办法', page: '23',
++      quote: '恢复的合成评分条款原文', confidence: '高',
++      evaluation: { category: '主观分', maximumScore: 40, reviewFocus: '合成评审要点' },
++    };
++    const calls: string[] = [];
++    const reports = new PrereadReportService({
++      loadContext: async () => ({
++        task: { id: 'task-1', title: '合成兼容回放', priorityLevel: '普通' },
++        document: { id: 'document-1', fileName: '合成.pdf', version: 7, completeTenderDocument: true, parseStatus: 'parsing' },
++        // The latest recovery evidence must override even a stale complete context.
++        extractionComplete: true, findings: [], previousFindings: [], manualActions: [],
++      } satisfies PrereadReportContext),
++    } as never, {});
++    const parser = new PrereadParserService({
++      load: (instanceId: string) => ({ call: async () => {
++        calls.push(instanceId);
++        if (instanceId === 'bid-fact-extractor') return { 项目事实: [{
++          statement: '恢复的合成项目事实', section: '项目概况', page: 2,
++          quote: '恢复的合成项目事实原文', confidence: 0.95,
++        }] };
++        if (instanceId === 'bid-score-extractor') return { 评分项: [cachedRecord], 评分办法: [] };
++        throw new Error('cache-only fixture has no document parser or model fallback');
++      } }),
++    } as never, new PrereadParserDatabasePersistence(database as never), undefined, reports);
++
++    const result = await parser.retryFactExtraction('task-1', 'document-1', { persistIncompleteReport: compatibility });
++    expect(calls).toEqual(['bid-fact-extractor', 'bid-score-extractor']);
++    expect(result.status).toBe('partial');
++    expect(database.taskStatus).toBe('partial');
++    expect(database.documentRow.metadata.extraction).toEqual({
++      status: 'partial', chunkCount: 2, succeededChunkCount: 2, failedChunkCount: 0, missingCategories: ['评分项'],
++    });
++    if (!compatibility) {
++      expect(database.findingCount).toBe(1);
++      expect(result.report).toBeUndefined();
++      return;
++    }
++    expect(database.findingCount).toBe(2);
++    expect(result.findingCount).toBe(2);
++    expect(result.report?.knowledgeContent).toMatchObject({
++      reportLevel: '部分结果', qualityStatus: '待复核', recommendation: '暂缓', scoreClosed: false,
++      technicalScores: [], commercialScores: [], priceScores: [],
++    });
++    expect(result.report?.markdownContent).toContain('恢复的合成评分条款');
++    expect(result.report?.markdownContent).toContain('缺失提取类别：评分项');
++    const inserted = database.operations.find((op) => op.kind === 'insert' && op.table === 'preread_findings');
++    expect(inserted?.values).toEqual(expect.arrayContaining([expect.objectContaining({
++      findingType: '待确认事项', status: 'unconfirmed', statement: cachedRecord.statement,
++    })]));
++    expect(database.operations.filter((op) => op.table === 'preread_reports')).toHaveLength(1);
++    expect(database.operations.filter((op) => op.table === 'preread_tasks').map((op) => (op.values as { status: string }).status)).toEqual(['parsing', 'partial']);
++  });
++
++  it('rolls back recovered partial findings and report together when the status write fails', async () => {
++    const database = new TransactionalDatabaseFake();
++    database.documentRow.parseStatus = 'parsing';
++    database.findingCount = 4;
++    database.failHistoryWrite = true;
++    const persistence = new PrereadParserDatabasePersistence(database as never);
++    await expect(persistence.finalizeFactExtractionRetry('task-1', 'document-1', [{ findingType: '项目事实', finding }], {
++      stage: 'fact_extraction', reason: 'extraction_incomplete', chunkCount: 2,
++      succeededChunkCount: 2, failedChunkCount: 0, missingCategories: ['评分项'],
++    }, { taskId: 'task-1', documentVersion: 7, markdownContent: '# 部分结果', knowledgeContent: {} as never })).rejects.toThrow('status history unavailable');
++    expect(database.rolledBack).toBe(true);
++    expect(database.findingCount).toBe(4);
++    expect(database.taskStatus).toBe('parsing');
++    expect(database.documentRow.parseStatus).toBe('parsing');
++    expect(database.operations).toEqual([]);
++  });
++
+   it('loads the persisted document file URL without writing when the version matches', async () => {
+     const database = new TransactionalDatabaseFake();
+     const persistence = new PrereadParserDatabasePersistence(database as never);
 diff --git a/server/modules/preread/preread-parser.service.spec.ts b/server/modules/preread/preread-parser.service.spec.ts
-index 1c467f2..d88c0ee 100644
+index 1c467f2..f77eeb0 100644
 --- a/server/modules/preread/preread-parser.service.spec.ts
 +++ b/server/modules/preread/preread-parser.service.spec.ts
+@@ -983,7 +983,7 @@ describe('PrereadParserService', () => {
+     ]);
+   });
+ 
+-  it('keeps previous findings when the recovery report service is unavailable', async () => {
++  it.each([false, true])('keeps previous findings when the recovery report service is unavailable (compatibility %s)', async (persistIncompleteReport) => {
+     const persistence = new InMemoryPrereadParserPersistence();
+     const previousFinding = {
+       findingType: '资格条件',
+@@ -1012,7 +1012,7 @@ describe('PrereadParserService', () => {
+     );
+ 
+     await expect(
+-      service.retryFactExtraction('task-1', 'document-1'),
++      service.retryFactExtraction('task-1', 'document-1', { persistIncompleteReport }),
+     ).resolves.toEqual({ status: 'partial', findingCount: 1 });
+     expect(persistence.findings).toEqual([previousFinding]);
+     expect(persistence.factExtractionRetryFinalizations).toEqual([]);
+@@ -1025,7 +1025,7 @@ describe('PrereadParserService', () => {
+     ]);
+   });
+ 
+-  it('keeps previous findings when a persisted-text extraction retry fails', async () => {
++  it.each([false, true])('keeps previous findings when a persisted-text extraction retry fails (compatibility %s)', async (persistIncompleteReport) => {
+     const persistence = new InMemoryPrereadParserPersistence();
+     const previousFinding = {
+       findingType: '资格条件',
+@@ -1045,7 +1045,7 @@ describe('PrereadParserService', () => {
+     );
+ 
+     await expect(
+-      service.retryFactExtraction('task-1', 'document-1'),
++      service.retryFactExtraction('task-1', 'document-1', { persistIncompleteReport }),
+     ).resolves.toEqual({ status: 'partial', findingCount: 1 });
+     expect(persistence.findings).toEqual([previousFinding]);
+     expect(persistence.factExtractionRetryFinalizations).toEqual([]);
+@@ -1058,7 +1058,7 @@ describe('PrereadParserService', () => {
+     ]);
+   });
+ 
+-  it('keeps previous findings when recovered extraction returns no facts', async () => {
++  it.each([false, true])('keeps previous findings when recovered extraction returns no facts (compatibility %s)', async (persistIncompleteReport) => {
+     const persistence = new InMemoryPrereadParserPersistence();
+     const previousFinding = {
+       findingType: '资格条件',
+@@ -1084,7 +1084,7 @@ describe('PrereadParserService', () => {
+     );
+ 
+     await expect(
+-      service.retryFactExtraction('task-1', 'document-1'),
++      service.retryFactExtraction('task-1', 'document-1', { persistIncompleteReport }),
+     ).resolves.toEqual({ status: 'partial', findingCount: 1 });
+     expect(persistence.findings).toEqual([previousFinding]);
+     expect(reportPreparationCalls).toBe(0);
+@@ -1097,7 +1097,7 @@ describe('PrereadParserService', () => {
+     ]);
+   });
+ 
+-  it('keeps previous findings and report state when candidate report preparation fails', async () => {
++  it.each([false, true])('keeps previous findings and report state when candidate report preparation fails (compatibility %s)', async (persistIncompleteReport) => {
+     const persistence = new InMemoryPrereadParserPersistence();
+     const previousFinding = {
+       findingType: '资格条件',
+@@ -1132,7 +1132,7 @@ describe('PrereadParserService', () => {
+     );
+ 
+     await expect(
+-      service.retryFactExtraction('task-1', 'document-1'),
++      service.retryFactExtraction('task-1', 'document-1', { persistIncompleteReport }),
+     ).resolves.toEqual({ status: 'partial', findingCount: 1 });
+     expect(persistence.findings).toEqual([previousFinding]);
+     expect(persistence.factExtractionRetryFinalizations).toEqual([]);
 @@ -1525,7 +1525,9 @@ describe('PrereadParserService', () => {
      expect(persistence.findings[0]).toEqual({
        findingType: '资格条件',
@@ -324,7 +512,7 @@ index 1c467f2..d88c0ee 100644
  
    it('keeps the complete scoring section when it exceeds the business-summary budget', async () => {
 diff --git a/server/modules/preread/preread-parser.service.ts b/server/modules/preread/preread-parser.service.ts
-index 1291a59..aae5aab 100644
+index 1291a59..339533e 100644
 --- a/server/modules/preread/preread-parser.service.ts
 +++ b/server/modules/preread/preread-parser.service.ts
 @@ -38,7 +38,7 @@ import {
@@ -336,6 +524,15 @@ index 1291a59..aae5aab 100644
  import { PrereadReportService } from './preread-report.service';
  import type {
    NewPrereadReport,
+@@ -227,7 +227,7 @@ export interface PrereadParserPersistence {
+     taskId: string,
+     documentId: string,
+     findings: Array<{ findingType: string; finding: PrereadFinding }>,
+-    detail: PrereadCompletedExtractionDetail,
++    detail: PrereadCompletedExtractionDetail | PrereadPartialExtractionDetail,
+     report?: NewPrereadReport,
+   ): Promise<PersistFindingsResult>;
+   abortFactExtractionRetry(
 @@ -1136,18 +1136,8 @@ const scoreMetadata = (finding: Record<string, unknown>) => {
      .filter((value): value is string => value !== undefined)
      .join(' ');
@@ -569,8 +766,152 @@ index 1291a59..aae5aab 100644
        ? { recommendation: '暂缓' as const }
        : {}),
      ...(commercial ? { commercial } : {}),
+@@ -1977,6 +2029,7 @@ export class PrereadParserService {
+   async retryFactExtraction(
+     taskId: string,
+     documentId: string,
++    options?: { persistIncompleteReport?: boolean },
+   ): Promise<PrereadParserResult> {
+     const delivery = await this.persistence.beginFactExtractionRetry(
+       taskId,
+@@ -2014,10 +2067,17 @@ export class PrereadParserService {
+       extraction.facts,
+       context.parsedText,
+     );
++    // Operational cache replay may publish recovered evidence without passing
++    // the completeness gate. Normal retries still preserve their old results.
++    const publishPartial = options?.persistIncompleteReport === true &&
++      extraction.chunkCount > 0 &&
++      extraction.succeededChunkCount === extraction.chunkCount &&
++      extraction.failures.length === 0 && findings.length > 0 &&
++      missingCategories.length > 0;
+     if (
+       extraction.failures.length > 0 ||
+       findings.length === 0 ||
+-      missingCategories.length > 0
++      (missingCategories.length > 0 && !publishPartial)
+     ) {
+       const detail: PrereadPartialExtractionDetail = {
+         stage: 'fact_extraction',
+@@ -2058,6 +2118,7 @@ export class PrereadParserService {
+       chunkCount: extraction.chunkCount,
+       succeededChunkCount: extraction.succeededChunkCount,
+       failedChunkCount: 0,
++      ...(publishPartial ? { missingCategories } : {}),
+     };
+     if (!this.reports) {
+       await this.persistence.abortFactExtractionRetry(
+@@ -2104,19 +2165,25 @@ export class PrereadParserService {
+           {
+             chunkCount: extraction.chunkCount,
+             succeededChunkCount: extraction.succeededChunkCount,
++            ...(publishPartial ? {
++              stage: 'fact_extraction' as const,
++              reason: 'extraction_incomplete' as const,
++              failedChunkCount: 0,
++              missingCategories,
++            } : {}),
+           },
+           preparedReport,
+         );
+       if (persisted.duplicate) {
+         return {
+-          status: 'analyzing',
++          status: publishPartial ? 'partial' : 'analyzing',
+           findingCount: 0,
+           duplicate: true,
+         };
+       }
+       if (persisted.report) {
+         return {
+-          status: 'completed',
++          status: publishPartial ? 'partial' : 'completed',
+           findingCount: findings.length,
+           report: persisted.report,
+         };
+@@ -2127,7 +2194,7 @@ export class PrereadParserService {
+         error,
+       );
+     }
+-    return { status: 'analyzing', findingCount: findings.length };
++    return { status: publishPartial ? 'partial' : 'analyzing', findingCount: findings.length };
+   }
+ 
+   async parseDocument(fileUrl: string): Promise<ParsedDocument> {
+@@ -3405,9 +3472,20 @@ export class PrereadParserDatabasePersistence
+     taskId: string,
+     documentId: string,
+     findings: Array<{ findingType: string; finding: PrereadFinding }>,
+-    detail: PrereadCompletedExtractionDetail,
++    detail: PrereadCompletedExtractionDetail | PrereadPartialExtractionDetail,
+     report?: NewPrereadReport,
+   ): Promise<PersistFindingsResult> {
++    const partialDetail = 'reason' in detail ? detail : undefined;
++    if (partialDetail && (
++      partialDetail.reason !== 'extraction_incomplete' ||
++      partialDetail.chunkCount <= 0 ||
++      partialDetail.succeededChunkCount !== partialDetail.chunkCount ||
++      partialDetail.failedChunkCount !== 0 ||
++      !partialDetail.missingCategories?.length || !findings.length || !report
++    )) {
++      throw new Error('Incomplete recovery requires all extracted chunks and a partial report');
++    }
++    const recoveredStatus = partialDetail ? 'partial' : 'analyzing';
+     return this.db.transaction(async (transaction) => {
+       const documentRows: Array<{
+         taskId: string;
+@@ -3441,7 +3519,7 @@ export class PrereadParserDatabasePersistence
+         | PrereadTaskStatus
+         | undefined;
+       if (
+-        taskStatus === 'analyzing' &&
++        taskStatus === recoveredStatus &&
+         document.parseStatus === 'parsed'
+       ) {
+         return { duplicate: true };
+@@ -3449,7 +3527,7 @@ export class PrereadParserDatabasePersistence
+       if (
+         taskStatus !== 'parsing' ||
+         document.parseStatus !== 'parsing' ||
+-        !canTransition(taskStatus, 'analyzing')
++        !canTransition(taskStatus, recoveredStatus)
+       ) {
+         throw new Error('Preread fact extraction retry is stale');
+       }
+@@ -3476,11 +3554,16 @@ export class PrereadParserDatabasePersistence
+           errorCode: null,
+           metadata: {
+             ...preservedMetadata,
++            ...(partialDetail ? { parserFailure: {
++              stage: partialDetail.stage,
++              reason: partialDetail.reason,
++            } } : {}),
+             extraction: {
+-              status: 'complete',
++              status: partialDetail ? 'partial' : 'complete',
+               chunkCount: detail.chunkCount,
+               succeededChunkCount: detail.succeededChunkCount,
+               failedChunkCount: 0,
++              ...(partialDetail ? { missingCategories: partialDetail.missingCategories } : {}),
+             },
+           },
+           updatedAt: new Date(),
+@@ -3576,10 +3659,10 @@ export class PrereadParserDatabasePersistence
+         transaction,
+         taskId,
+         taskStatus,
+-        'analyzing',
+-        'fact_extraction_recovered',
++        recoveredStatus,
++        partialDetail ? 'fact_extraction_recovered_partial' : 'fact_extraction_recovered',
+       );
+-      if (report) {
++      if (report && !partialDetail) {
+         await this.transitionTaskInTransaction(
+           transaction,
+           taskId,
 diff --git a/server/modules/preread/preread-relay.controller.spec.ts b/server/modules/preread/preread-relay.controller.spec.ts
-index 1942697..abc1a71 100644
+index 1942697..37b9e88 100644
 --- a/server/modules/preread/preread-relay.controller.spec.ts
 +++ b/server/modules/preread/preread-relay.controller.spec.ts
 @@ -88,6 +88,7 @@ describe('PrereadRelayController', () => {
@@ -589,7 +930,25 @@ index 1942697..abc1a71 100644
      lastFactExtractionRetry = undefined;
      backgroundStartCalls = 0;
      backgroundClaimCalls = 0;
-@@ -418,6 +420,10 @@ describe('PrereadRelayController', () => {
+@@ -401,14 +403,15 @@ describe('PrereadRelayController', () => {
+             retryFactExtraction: async (
+               taskId: string,
+               documentId: string,
++              options?: { persistIncompleteReport?: boolean },
+             ) => {
+               retryFactExtractionCalls += 1;
+-              lastFactExtractionRetry = { taskId, documentId };
++              lastFactExtractionRetry = { taskId, documentId, options };
+               return {
+                 status: factExtractionRetryStatus,
+                 findingCount:
+                   factExtractionRetryStatus === 'completed' ? 12 : 2,
+-                ...(factExtractionRetryStatus === 'completed'
++                ...(factExtractionRetryStatus === 'completed' || options?.persistIncompleteReport
+                   ? { report: latestReportResult }
+                   : {}),
+               };
+@@ -418,6 +421,10 @@ describe('PrereadRelayController', () => {
          {
            provide: PrereadReportService,
            useValue: {
@@ -600,22 +959,22 @@ index 1942697..abc1a71 100644
              generate: async () => {
                reportGenerationCalls += 1;
                return latestReportResult;
-@@ -1790,6 +1796,40 @@ describe('PrereadRelayController', () => {
+@@ -1790,6 +1797,40 @@ describe('PrereadRelayController', () => {
      expect(completeReportCalls).toBe(0);
    });
  
-+  it('replays compatible extraction through the inline parser and returns its finalized report', async () => {
++  it.each(['completed', 'partial'] as const)('captures the committed compatibility report while preserving extraction status %s', async (status) => {
 +    const taskId = '8154f64c-81e1-4fc4-849f-95cbd4e9ff41';
 +    const documentId = '4bb42e77-6428-4af0-9d26-9877ea93e079';
-+    factExtractionRetryStatus = 'completed';
++    factExtractionRetryStatus = status;
 +    const response = await fetch(`${baseUrl}/openapi/preread/tasks/${taskId}/replay-compatible-extraction`, {
 +      method: 'POST',
 +      headers: { authorization: relayAuthorization, 'content-type': 'application/json' },
 +      body: JSON.stringify({ documentId }),
 +    });
 +    expect(response.status).toBe(201);
-+    expect(await response.json()).toMatchObject({ extraction: { status: 'completed', findingCount: 12 }, report: latestReportResult });
-+    expect(lastFactExtractionRetry).toEqual({ taskId, documentId });
++    expect(await response.json()).toMatchObject({ extraction: { status, findingCount: status === 'completed' ? 12 : 2 }, report: latestReportResult });
++    expect(lastFactExtractionRetry).toEqual({ taskId, documentId, options: { persistIncompleteReport: true } });
 +    expect(finalizedReportCaptures).toEqual([latestReportResult]);
 +    expect(retryFactExtractionCalls).toBe(1);
 +    expect(backgroundStartCalls).toBe(0);
@@ -642,7 +1001,7 @@ index 1942697..abc1a71 100644
      const taskId =
        '8154f64c-81e1-4fc4-849f-95cbd4e9ff41';
 diff --git a/server/modules/preread/preread-relay.controller.ts b/server/modules/preread/preread-relay.controller.ts
-index 3aafb29..ca49d4c 100644
+index 3aafb29..6b8f32a 100644
 --- a/server/modules/preread/preread-relay.controller.ts
 +++ b/server/modules/preread/preread-relay.controller.ts
 @@ -55,6 +55,7 @@ import {
@@ -661,7 +1020,7 @@ index 3aafb29..ca49d4c 100644
    ) {}
  
    @Get('health')
-@@ -587,6 +589,23 @@ export class PrereadRelayController {
+@@ -587,6 +589,24 @@ export class PrereadRelayController {
      return deliveryTarget ? { deliveryTarget } : {};
    }
  
@@ -675,6 +1034,7 @@ index 3aafb29..ca49d4c 100644
 +    const extraction = await this.parser.retryFactExtraction(
 +      params.taskId,
 +      input.documentId,
++      { persistIncompleteReport: true },
 +    );
 +    if (extraction.report) {
 +      await this.reports.captureFinalizedReport(extraction.report);
@@ -713,10 +1073,31 @@ index eca96ce..d675d19 100644
      const store = new InMemoryReportStore();
      const handoffs = { capture: jest.fn().mockResolvedValue({}) };
 diff --git a/server/modules/preread/preread-report.service.ts b/server/modules/preread/preread-report.service.ts
-index 000388e..f74a279 100644
+index 000388e..f708ad3 100644
 --- a/server/modules/preread/preread-report.service.ts
 +++ b/server/modules/preread/preread-report.service.ts
-@@ -861,6 +861,13 @@ export class PrereadReportService {
+@@ -730,7 +730,19 @@ export class PrereadReportService {
+                   parserFailure: undefined,
+                 },
+               }
+-            : {}),
++            : typeof recovery === 'object'
++              ? {
++                  extractionComplete: false,
++                  document: {
++                    ...persistedContext.document,
++                    extraction: {
++                      failedChunkCount: recovery.failedChunkCount,
++                      missingCategories: recovery.missingCategories,
++                    },
++                    parserFailure: { reason: 'extraction_incomplete' },
++                  },
++                }
++              : {}),
+           findings,
+         }
+       : persistedContext;
+@@ -861,6 +873,13 @@ export class PrereadReportService {
      return this.store.markDeliveryRetry(input);
    }
  
