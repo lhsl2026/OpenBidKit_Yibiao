@@ -29,7 +29,7 @@ npm.cmd test
 npm.cmd start
 ```
 
-默认监听 `127.0.0.1:4381`。`GET /health` 检查进程响应与实例所有权；失去租约后返回 503，需配置进程监管器据此重启服务；旧进程不会重新抢租继续旧任务；`GET /ready` 检查本地接入配置、台账快照新鲜度和实例所有权，未就绪为 503；它不代替真实飞书/模型连通性验收。对外入口使用现有网关/TLS 反向代理，将卡片回调路由至 `/lark/events`；内部管理 API 不能直接公开。工作目录、凭证和公司资料放在被 Git 忽略的 `.env`、`data/` 中。
+默认监听 `127.0.0.1:4381`。`GET /health` 检查进程响应与实例所有权；失去租约后返回 503，由 [Windows 监管器](deployment/README.md) 停止旧实例再重启。`GET /ready` 检查本地接入配置、台账快照新鲜度和实例所有权，未就绪为 503；它不代替真实飞书/模型连通性验收。卡片可通过专用 CLI 机器人长连接接收，或由现有网关/TLS 反向代理转发到 `/lark/events`，同一应用只选一个接收通道。内部管理 API 不能直接公开。凭证和公司资料位于被 Git 忽略的 `.env`、`data/` 中。
 
 ## 必要配置
 
@@ -58,22 +58,26 @@ npm.cmd start
 
 ## 现有系统如何接入
 
-本服务不额外抢占现有群事件消费者。既有网关或判标雷达的接入程序将已规范化的事件转发到 `POST /radar`，认证使用 `BID_API_KEY`。接收端先落库并返回 202，后台使用预读服务真实接口处理：
+标讯来源可用已授权用户的历史轮询，也可由既有网关将规范化事件转发到 `POST /radar`，认证使用 `BID_API_KEY`；两种入口按正文去重。专用机器人仅为本项目卡片建立独立长连接，保留旧应用消费者。HTTP 接收端先落库并返回 202，后台使用预读服务真实接口处理：
 
 - `POST /openapi/preread/events/lark-message`，使用 relay authorization。
 - `GET /api/preread/tasks/:taskId/handoff`，使用 handoff key。
 
 事件字段：`eventType: "im.message.receive_v1"`、`eventId`、`messageId`、`chatId`、`senderId`、`messageType`、`content`；其他支持字段有 `chatType/createTime/senderType`。`content` 保留飞书原始消息 JSON 字符串。来源群和发送者均需命中白名单。鉴权后的重复消息不会重复排入本地收件箱。
 
-已核对旧 standalone 部署中预读服务名为 `preread-api`，容器端口 3000；原 Compose 没有向 Windows 主机暴露该端口。本目录提供可选 [本机访问覆盖文件](deployment/preread-host-access.compose.yml)，只绑定 `127.0.0.1:4382`。在恢复现有 Docker 栈后，将覆盖文件和原 Compose 一起应用即可从本机访问；这不会修改原 Compose 文件。本次未应用该覆盖文件，也未启动或切换旧运行栈。旧 `STANDALONE_AUTHORIZATION` 对应本服务的 `PREREAD_RELAY_AUTHORIZATION`，旧 `FEISHU_*` 验签变量对应这里的 `LARK_*` 验签变量。
+已核对旧 standalone 部署中预读服务名为 `preread-api`，容器端口 3000；本目录提供 [本机访问覆盖文件](deployment/preread-host-access.compose.yml)，只绑定 `127.0.0.1:4382`。2026-09-10 已恢复既有 Docker 栈并应用覆盖文件，只重新创建预读 API，原 Compose 与其环境文件保持原样。旧 `STANDALONE_AUTHORIZATION` 对应本服务的 `PREREAD_RELAY_AUTHORIZATION`，旧 `FEISHU_*` 验签变量对应这里的 `LARK_*` 验签变量。应用覆盖文件时只使用旧部署的 `--env-file`；将本项目的来源群、来源机器人、投递群与测试群四个 `BID_*` 变量传入 Compose 调用进程，避免本项目空模型字段覆盖旧部署配置。
 
-后台只跟踪真实回执中的 taskId，每分钟重读 handoff，以发现补件、预读完成或新版本。不假设上游存在任务列表 API，也不扫描群历史。已有任务可用 `POST /watch` 注册 `{ "taskId": "..." }`。也可以 `POST /handoffs` 直接推入 `{ "handoff": {...}, "deadline": "2026-12-01T10:00:00+08:00", "reportUrl": "https://...", "sourceUrl": "https://..." }`。
+历史标讯轮询使用已授权用户的显式 CLI profile，每分钟读取来源群，持久保存分页窗口和游标。text/post 在预读接口边界展开；原始消息和接收结果保留在本地，补件 actionId 不会随进程重启丢失。机器人 profile 与来源读取的用户 profile 分开配置；open_id 必须使用对应应用下的值。
+
+后台只跟踪真实回执中的 taskId，每分钟重读 handoff，以发现补件、预读完成或新版本。不假设上游存在任务列表 API。已有任务可用 `POST /watch` 注册 `{ "taskId": "..." }`。也可以 `POST /handoffs` 直接推入 `{ "handoff": {...}, "deadline": "2026-12-01T10:00:00+08:00", "reportUrl": "https://...", "sourceUrl": "https://..." }`。
+
+待确认项目由测试群选择卡呈现，授权员工勾选后才请求预读。重点项目进入上游自动处理队列不代表预读已完成。来源消息变更时暂停旧批次、任务和卡片，保留人工核对状态。
 
 只有可信且带时区的截止时间才能开启编写。未传入时，服务仅尝试读取预读中无需确认的明确“投标截止/递交截止”字段；歧义日期仍为待核实。预读完整性、文件缺失、扫描页、资格条款和红线等阻塞事项不能被“确认跟进”绕过。
 
 ## 原文件与生成
 
-原文件由既有预读服务负责获取、OCR 和解析；本服务消费其 handoff，编写阶段另需同一文件的字节。接入程序将完整文件上传到内部接口：
+原文件通常由既有预读服务获取、OCR 和解析。本服务还可为真实缺件任务恢复已验证的贵州官方 XML-ZYZF 正文，分阶段上传并附加到原任务；详见 [正文恢复和 Windows 部署](deployment/README.md)。其他来源保留人工补件。本服务消费 handoff，编写阶段另需同一文件的字节。接入程序可将完整文件上传到内部接口：
 
 ```text
 POST /sources?projectId=<项目卡返回的id>&name=tender.pdf

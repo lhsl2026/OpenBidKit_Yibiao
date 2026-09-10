@@ -8,6 +8,10 @@ const { createHttpServer } = require('./server.cjs');
 const { createPrereadClient } = require('./preread.cjs');
 const { createLarkClient } = require('./lark.cjs');
 const { createRunner } = require('./runner.cjs');
+const { createCardSource, toWorkflowAction } = require('./card-source.cjs');
+const { createSelection } = require('./selection.cjs');
+const { createDocumentRecovery } = require('./document-recovery.cjs');
+const { isSourceInboxActive } = require('./receipt.cjs');
 
 function readEvidenceInWorker(config, { signal } = {}) {
   return new Promise((resolve, reject) => {
@@ -37,7 +41,7 @@ function deadlineFrom(h) {
   const m = value.match(/^(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?\s+(\d{1,2})[:：](\d{2})(?::(\d{2}))?$/);
   return m ? m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0') + 'T' + m[4].padStart(2, '0') + ':' + m[5] + ':' + (m[6] || '00') + '+08:00' : '';
 }
-function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now } = {}) {
+function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery } = {}) {
   const store = createStore(path.join(config.dataRoot, 'workflow.sqlite3'));
   const snapshotController = new AbortController();
   let snapshot = { records: [], warnings: ['vault_not_configured'] }, snapshotAt = 0, vaultReady = false, rules = [];
@@ -55,7 +59,10 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     const match = rules.find(r => r.taskId === h.task.taskId && String(r.documentVersion) === String(h.snapshot.documentVersion) && r.checksum === h.snapshot.checksum);
     // A configured rule file is authoritative; persisted handoffs cannot revive removed rules.
     const resolvedRules = config.rulesPath ? match?.rules ?? [] : input.rules ?? previous.rules ?? [];
-    return { ...previous, ...input, companyId: config.companyId, deadline: input.deadline ?? previous.deadline ?? deadlineFrom(h), rules: resolvedRules };
+    const localSource = store.get('document-source:' + h.task.taskId);
+    const checksumMatches = localSource && String(h.snapshot.checksum).replace(/^sha256:/i, '').toLowerCase() === localSource.sha256;
+    const handoff = localSource ? { ...h, warnings: [...h.warnings.filter(w => w.code !== 'source_checksum_mismatch'), ...(checksumMatches ? [] : [{ code: 'source_checksum_mismatch', blocked: true }])] } : h;
+    return { ...previous, ...input, handoff, ...(localSource ? { sourcePath: checksumMatches ? localSource.sourcePath : undefined, sourceChecksum: localSource.sha256 } : {}), companyId: config.companyId, deadline: input.deadline ?? previous.deadline ?? deadlineFrom(h), rules: resolvedRules };
   };
   const core = createWorkflow({ store, assess, normalizeInput, clock, chatId: config.chatId, operatorIds: config.operatorIds });
   const assertRuntime = () => { if (fenced) runner.assertOwnership(); };
@@ -83,7 +90,14 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
   const preread = config.prereadUrl ? createPrereadClient({ baseUrl: config.prereadUrl, apiKey: config.prereadKey, relayAuthorization: config.relayAuthorization }) : null;
   const lark = config.appId && config.appSecret ? createLarkClient({ appId: config.appId, appSecret: config.appSecret }) : null;
   const write = (job, { signal } = {}) => require('./writing.cjs').runWritingJob({ job, root: config.writingRoot, electronPath: config.electronPath, clientRoot: config.clientRoot, modelConfig: config.modelConfig, signal });
-  const runner = createRunner({ store, config, workflow, preread, lark, write, clock });
+  let selection, documentRecovery;
+  const runner = createRunner({ store, config, workflow, preread, lark, write, clock,
+    onReceipt: (receipt, meta) => { selection.queue(receipt, meta); documentRecovery.queueReceipt(receipt, meta); },
+    onSourceEdited: inboxId => selection.invalidateInbox(inboxId), onTick: args => documentRecovery.tick(args) });
+  documentRecovery = documentRecoveryFactory({ store, config, clock, assertOwnership: () => runner.assertOwnership(), isSourceActive: job => !job.sourceInboxId || isSourceInboxActive(store, job.sourceInboxId) });
+  selection = selectionFactory({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership(), onReceipt: (receipt, meta) => documentRecovery.queueReceipt(receipt, meta) });
+  const cardSource = cardSourceFactory({ config, workflow, assertOwnership: () => runner.assertOwnership(), clock,
+    onAction: (value, event) => value.agent === 'openbidkit-selection' ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event)) });
   function readiness() {
     const missing = [];
     if (!config.companyId) missing.push('company');
@@ -93,19 +107,21 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     if (!config.modelConfig.api_key || !config.modelConfig.model_name || !config.modelConfig.base_url) missing.push('model');
     if (!preread || !config.prereadKey || !config.relayAuthorization) missing.push('preread');
     if (!config.sourceChats.length || !config.sourceSenders.length) missing.push('radar_allowlist');
-    if (!config.operatorIds.length || !config.verificationToken || !config.encryptKey) missing.push('card_callback');
+    if (config.radarPolling?.enabled && config.sourceChats.some(chat=>{const s=store.get('radar-source:'+chat);return !s?.lastSuccessAt||s.error||clock()-s.lastSuccessAt>300000;})) missing.push('radar_source');
+    if (!config.operatorIds.length || (config.cardSource?.enabled ? !cardSource.status().ready : !config.verificationToken || !config.encryptKey)) missing.push('card_callback');
     if (config.mode !== 'test') missing.push('test_delivery');
     try { assertRuntime(); } catch { missing.push('service_ownership'); }
     return { ready: missing.length === 0, mode: config.mode, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
-  return { store, workflow, runner, server, readiness, refreshEvidence,
+  return { store, workflow, runner, cardSource, selection, documentRecovery, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;
       try {
+        cardSource.start();
         await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
-      } catch (error) { await runner.close(); throw error; }
+      } catch (error) { await cardSource.close(); await runner.close(); throw error; }
       await refreshEvidence();
       if (closed) return;
       timer = setInterval(() => runner.tick().catch(() => console.error('runner_tick_failed')), 5000);
@@ -115,6 +131,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     async close() {
       if (closed) return; closed = true;
       clearInterval(timer); clearInterval(refreshTimer); snapshotController.abort();
+      await cardSource.close();
       await new Promise(r => server.close(r));
       await runner.close(); store.close();
     }

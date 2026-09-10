@@ -5,9 +5,14 @@ function validateInput(input){
   if(h.superseded||h.latestDocumentVersion!==s.documentVersion)throw new Error('stale_handoff');
 }
 function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now,chatId,operatorIds=[]}){
+  const assessed=input=>{
+    const value=assess(input);
+    if(input?.sourceMessage?.status!=='edited_requires_review')return value;
+    return {...value,decision:'review',blockers:[...new Set([...(value.blockers??[]),'source_message_edited'])],actions:[...new Set([...(value.actions??[]),'review_edited_source_message'])]};
+  };
   function revalidate(id){return store.transaction(()=>{
     const p=store.getProject(id);if(!p?.current)return p;
-    const input=normalizeInput(p.input),assessment=assess(input);
+    const input=normalizeInput(p.input),assessment=assessed(input);
     if(JSON.stringify(p.input)!==JSON.stringify(input)||JSON.stringify(p.assessment)!==JSON.stringify(assessment))return store.reassess(id,assessment,clock(),input);
     return p;
   });}
@@ -15,7 +20,7 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
     revalidate,
     ingest(input){validateInput(input);input=normalizeInput(input);return store.transaction(()=>{
       const h=input.handoff,s=h.snapshot,now=clock();const version=String(s.documentVersion);const id=key(h.task.taskId,input.companyId,version);
-      const existing=store.getProject(id);const assessment=assess(input);
+      const existing=store.getProject(id);const assessment=assessed(input);
       if(existing){if(!existing.current)throw new Error('stale_handoff');if(existing.checksum!==s.checksum)throw new Error('version_conflict');if(JSON.stringify(existing.assessment)!==JSON.stringify(assessment)||JSON.stringify(existing.input)!==JSON.stringify(input))return store.reassess(id,assessment,now,input);return existing;}
       const current=store.current(h.task.taskId,input.companyId);
       if(current&&Date.parse(current.generatedAt)>=Date.parse(s.generatedAt))throw new Error('stale_handoff');
@@ -31,6 +36,7 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
       if(!action.eventId||!['follow','defer','decline','write','continue','retry','page'].includes(action.action))throw new Error('invalid_action');
       const p=store.getProject(action.projectId);
       if(!p||!p.current||action.version!==p.version)throw new Error('stale_card');
+      if(p.input?.sourceMessage?.status==='edited_requires_review'&&['follow','write','continue','retry'].includes(action.action))throw new Error('source_message_edited');
       if(!p.messageId||action.messageId!==p.messageId)throw new Error('message_mismatch');
       if(action.cardKey!==key(p.input,p.assessment))throw new Error('stale_card');
       const hash=key(action);const previous=store.getAction(action.eventId);if(previous){if(previous.hash!==hash)throw new Error('event_conflict');return previous.result;}
@@ -42,7 +48,7 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
       }else if(['write','continue','retry'].includes(action.action)){
         if(p.humanDecision!=='follow')throw new Error('follow_required');
         const h=p.input.handoff;const deadline=Date.parse(p.input.deadline);
-        if(h.status!=='ready'||h.superseded||h.warnings.some(w=>w.blocked)||!Number.isFinite(deadline)||deadline<=clock()||p.assessment.decision!=='follow'||assess(p.input).decision!=='follow')throw new Error('writing_not_ready');
+        if(h.status!=='ready'||h.superseded||h.warnings.some(w=>w.blocked)||!Number.isFinite(deadline)||deadline<=clock()||p.assessment.decision!=='follow'||assessed(p.input).decision!=='follow')throw new Error('writing_not_ready');
         let jobId;
         if(action.action==='write')jobId=store.enqueueWriting(p,clock());
         else{

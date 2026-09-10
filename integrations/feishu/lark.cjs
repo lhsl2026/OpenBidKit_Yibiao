@@ -18,7 +18,7 @@ async function deliverOutbox({store,client,mode,chatId,allowedChats=[],clock=Dat
     const p=row.project_id?revalidate(row.project_id):null;
     if(row.project_id&&(!p?.current)){store.sent(row.id);continue;}
     const stream=p?store.messageStream(p,chatId):null;
-    const messageId=stream?.message_id??p?.messageId;
+    const messageId=p?(stream?.message_id??p?.messageId):store.get('outbox-message:'+row.id);
     const firstAttempt=stream?stream.first_attempt:row.first_attempt;
     // Once the deduplication window may have elapsed, a possibly-sent create needs reconciliation.
     if(!messageId&&firstAttempt!==null&&clock()-firstAttempt>45*60000){store.manualDelivery(row.id);continue;}
@@ -40,9 +40,13 @@ async function deliverOutbox({store,client,mode,chatId,allowedChats=[],clock=Dat
           // A duplicate UUID may return the earlier version's card. Always patch the latest state.
           const latest=store.current(p.taskId,p.companyId);
           if(latest){const fresh=revalidate(latest.id);assertOwnership();await client.updateCard(id,cardFor(fresh));assertOwnership();}
-        }
+        }else store.transaction(()=>{store.set('outbox-message:'+row.id,id);const stateKey=store.get('selection-outbox:'+row.id);if(stateKey){const state=store.get(stateKey);if(state)store.set(stateKey,{...state,messageId:id});}});
       }
-      store.sent(row.id);
+      if(row.project_id)store.sent(row.id);
+      else{
+        const current=store.db.prepare('SELECT payload FROM outbox WHERE id=? AND delivered=0').get(row.id);
+        if(current?.payload===row.payload)store.sent(row.id);
+      }
     }catch{assertOwnership();store.retry(row,clock());}
   }
 }

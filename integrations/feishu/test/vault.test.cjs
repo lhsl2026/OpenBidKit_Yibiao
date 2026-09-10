@@ -139,6 +139,24 @@ function verifiedMapping(record, overrides = {}) {
   };
 }
 
+function loadVaultWithWholeAttachmentReadsBlocked(attachmentPaths) {
+  const fs = require('node:fs');
+  const originalReadFileSync = fs.readFileSync;
+  const blocked = new Set(attachmentPaths.map((file) => path.resolve(file)));
+  fs.readFileSync = (file, ...args) => {
+    if (blocked.has(path.resolve(String(file)))) {
+      throw new Error('whole_attachment_read_forbidden');
+    }
+    return originalReadFileSync(file, ...args);
+  };
+  try {
+    delete require.cache[require.resolve('../vault.cjs')];
+    return require('../vault.cjs');
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
+}
+
 test('reads a manually verified company record without changing the source database', () => {
   const record = certificate();
   const vault = createVault([record]);
@@ -202,4 +220,53 @@ test('keeps missing, changed, escaped, and malformed attachments unverified', ()
   assert.ok(byId.malformed.verificationIssues.includes('attachment_invalid'));
   assert.equal(snapshot.records.every((record) => record.verified === false), true);
   assert.equal(snapshot.warnings.length, 4);
+});
+
+test('verifies a multi-block PDF without whole-file reads when %%EOF crosses the chunk boundary', () => {
+  const chunkSize = 1024 * 1024;
+  const bytes = Buffer.alloc(chunkSize * 2 + 64, 0x20);
+  bytes.write('%PDF-1.7\n', 0, 'ascii');
+  bytes.write('%%EOF', chunkSize - 2, 'ascii');
+  const record = certificate({
+    id: 'large-pdf',
+    attachments: [{ id: 'att-large-pdf', bytes }],
+  });
+  const vault = createVault([record]);
+  const attachmentPath = path.join(vault.filesRoot, 'files', 'att-large-pdf.pdf');
+  const streamingVault = loadVaultWithWholeAttachmentReadsBlocked([attachmentPath]);
+
+  const snapshot = streamingVault.readVaultSnapshot({
+    databasePath: vault.databasePath,
+    filesRoot: vault.filesRoot,
+    mappings: [verifiedMapping(record)],
+    companyId: 'company-lc',
+  });
+
+  assert.equal(snapshot.records[0].verified, true);
+  assert.equal(snapshot.records[0].attachments[0].actualSha256, sha256(bytes));
+});
+
+test('verifies a multi-block JPEG from its header and final bytes without whole-file reads', () => {
+  const bytes = Buffer.alloc(1024 * 1024 + 17, 0x20);
+  bytes[0] = 0xff;
+  bytes[1] = 0xd8;
+  bytes[bytes.length - 2] = 0xff;
+  bytes[bytes.length - 1] = 0xd9;
+  const record = certificate({
+    id: 'large-jpeg',
+    attachments: [{ id: 'att-large-jpeg', name: 'evidence.jpg', relativePath: 'files/evidence.jpg', bytes }],
+  });
+  const vault = createVault([record]);
+  const attachmentPath = path.join(vault.filesRoot, 'files', 'evidence.jpg');
+  const streamingVault = loadVaultWithWholeAttachmentReadsBlocked([attachmentPath]);
+
+  const snapshot = streamingVault.readVaultSnapshot({
+    databasePath: vault.databasePath,
+    filesRoot: vault.filesRoot,
+    mappings: [verifiedMapping(record)],
+    companyId: 'company-lc',
+  });
+
+  assert.equal(snapshot.records[0].verified, true);
+  assert.equal(snapshot.records[0].attachments[0].actualSha256, sha256(bytes));
 });

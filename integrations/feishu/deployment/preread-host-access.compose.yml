@@ -2,5 +2,10 @@
 # Use only when this Node service runs on the Windows host.
 services:
   preread-api:
+    environment:
+      PREREAD_LARK_SOURCE_CHAT_IDS: ${BID_SOURCE_CHAT_IDS:?set BID_SOURCE_CHAT_IDS}
+      PREREAD_LARK_SOURCE_SENDER_IDS: ${BID_SOURCE_SENDER_IDS:?set BID_SOURCE_SENDER_IDS}
+      PREREAD_LARK_DELIVERY_CHAT_ID: ${BID_CHAT_ID:?set BID_CHAT_ID}
+      PREREAD_LARK_SELECTION_CHAT_IDS: ${BID_TEST_CHAT_IDS:?set BID_TEST_CHAT_IDS}
     ports:
       - "127.0.0.1:4382:3000"

@@ -3,11 +3,15 @@ const { key } = require('./store.cjs');
 const { deliverOutbox } = require('./lark.cjs');
 const { buildSummary } = require('./card.cjs');
 const { enqueueArtifacts, deliverFiles } = require('./files.cjs');
+const { recordReceipt, inspectReceipt, isSourceInboxActive } = require('./receipt.cjs');
+const { normalizeRadarContent } = require('./preread.cjs');
 
-function createRunner({ store, config, workflow, preread, lark, write, clock = Date.now }) {
+function createRunner({ store, config, workflow, preread, lark, write, onReceipt, onSourceEdited, onTick, clock = Date.now }) {
   const owner = randomUUID(), controller = new AbortController();
   let running = false, acquired = false, lost = false, closing = false, renewal;
+  const radarSource = require('./radar-source.cjs').createRadarSource({store,config,receive:receiveRadar,clock,assertOwnership,signal:controller.signal});
   const revalidate = id => workflow.revalidate ? workflow.revalidate(id) : store.getProject(id);
+  const watchActive=w=>{const current=store.getWatch(w.task_id);return !!current&&JSON.stringify(current.payload)===JSON.stringify(w.payload)&&(!w.payload.sourceInboxId||isSourceInboxActive(store,w.payload.sourceInboxId));};
 
   function loseOwnership() {
     lost = true; clearInterval(renewal); controller.abort(new Error('runner_lease_lost'));
@@ -41,8 +45,30 @@ function createRunner({ store, config, workflow, preread, lark, write, clock = D
     if (acquired || lost) assertOwnership();
     if (!config.sourceChats?.includes(input.chatId) || !config.sourceSenders?.includes(input.senderId)) throw Error('source_not_allowed');
     if (input.eventType !== 'im.message.receive_v1' || !input.messageId || !input.eventId) throw Error('radar_invalid');
-    const payload = Object.fromEntries(['eventType', 'eventId', 'chatId', 'chatType', 'messageId', 'messageType', 'createTime', 'senderId', 'senderType', 'content'].filter(k => input[k] !== undefined).map(k => [k, input[k]]));
-    store.receiveRadar(key('radar', input.chatId, input.messageId), payload); return { status: 'accepted' };
+    const normalizedContent=normalizeRadarContent(input.messageType,input.content);
+    const messageKey=key('radar-message',input.chatId,input.messageId),stateKey='radar-message:'+messageKey;
+    const inboxId=key('radar',input.chatId,input.messageId,input.messageType,normalizedContent);
+    const payload = Object.fromEntries(['eventType', 'chatId', 'chatType', 'messageId', 'messageType', 'createTime', 'senderId', 'senderType', 'content'].filter(k => input[k] !== undefined).map(k => [k, input[k]]));
+    payload.eventId='openbidkit-radar-'+inboxId;
+    return store.transaction(()=>{
+      const state=store.get(stateKey);
+      if(!state){
+        store.receiveRadar(inboxId,payload);store.set(stateKey,{status:'active',original:{inboxId,messageType:input.messageType,content:input.content,normalizedContent},edits:[]});store.set('radar-inbox:'+inboxId,stateKey);
+        return {status:'accepted'};
+      }
+      if(state.original.inboxId===inboxId){store.receiveRadar(inboxId,payload);store.set('radar-inbox:'+inboxId,stateKey);return {status:state.status==='edited_requires_review'?state.status:'accepted'};}
+      const edits=Array.isArray(state.edits)?state.edits:[];
+      if(!edits.some(edit=>edit.inboxId===inboxId))edits.push({inboxId,messageType:input.messageType,content:input.content,normalizedContent,receivedAt:clock()});
+      let taskIds=[...(state.linkedTaskIds??[]),...store.listWatchesBySource(state.original.inboxId).map(w=>w.task_id)];const receipt=store.get('radar-receipt:'+state.original.inboxId);
+      if(receipt)try{taskIds.push(...inspectReceipt(receipt).taskIds);}catch{}
+      taskIds=[...new Set([...taskIds,...store.listWatchesBySource(state.original.inboxId).map(w=>w.task_id)])];
+      for(const taskId of taskIds){
+        store.unwatch(taskId);const project=store.current(taskId,config.companyId);
+        if(project)store.reassess(project.id,{...project.assessment,decision:'review',blockers:[...new Set([...(project.assessment.blockers??[]),'source_message_edited'])],actions:[...new Set([...(project.assessment.actions??[]),'review_edited_source_message'])]},clock(),{...project.input,sourceMessage:{status:'edited_requires_review',inboxId:state.original.inboxId}});
+      }
+      store.finishInbox(state.original.inboxId);store.set(stateKey,{...state,status:'edited_requires_review',edits,linkedTaskIds:taskIds});if(onSourceEdited)onSourceEdited(state.original.inboxId);
+      return {status:'edited_requires_review'};
+    });
   }
   function recoverArtifacts() {
     if (!config.writingRoot) return;
@@ -64,24 +90,25 @@ function createRunner({ store, config, workflow, preread, lark, write, clock = D
     running = true;
     try {
       assertOwnership();
+      await radarSource.poll();
+      assertOwnership();
       if (preread) {
         for (const row of store.listInbox(clock())) {
           try {
             assertOwnership(); const result = await preread.receiveRadar(row.payload); assertOwnership();
-            if (result.status === 'processing') throw Error('pending');
-            store.transaction(() => {
-              for (const r of result.results ?? []) if (typeof r.taskId === 'string' && r.taskId) store.watch(r.taskId, { companyId: config.companyId });
-              store.finishInbox(row.id);
-            });
+            if(!isSourceInboxActive(store,row.id)){store.set('radar-receipt:'+row.id,result);continue;}
+            recordReceipt({store,inboxId:row.id,response:result,companyId:config.companyId,now:clock(),onReceipt});
           } catch { assertOwnership(); store.retryInbox(row.id, clock()); }
         }
         for (const w of store.listWatches(clock())) {
           try {
             assertOwnership(); const handoff = await preread.getHandoff(w.task_id); assertOwnership();
+            if(!watchActive(w))continue;
             workflow.ingest({ ...w.payload, handoff }); store.deferWatch(w.task_id, clock());
-          } catch { assertOwnership(); store.deferWatch(w.task_id, clock(), 'handoff_unavailable'); }
+          } catch { assertOwnership(); if(watchActive(w))store.deferWatch(w.task_id, clock(), 'handoff_unavailable'); }
         }
       }
+      if(onTick){assertOwnership();await onTick({signal:controller.signal});assertOwnership();}
       recoverArtifacts();
       if (write) for (const selected of store.listWriting().filter(j => j.status === 'queued')) {
         assertOwnership(); let p = revalidate(selected.project_id);

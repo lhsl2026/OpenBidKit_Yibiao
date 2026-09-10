@@ -1,7 +1,12 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { readFileSync, realpathSync } = require('node:fs');
+const {
+  closeSync,
+  openSync,
+  readSync,
+  realpathSync,
+} = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
@@ -34,35 +39,92 @@ const ATTACHMENT_COLUMNS = [
   'position',
 ];
 
-function hash(bytes) {
-  return createHash('sha256').update(bytes).digest('hex');
-}
+const ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
+const SIGNATURE_HEADER_BYTES = 8;
+const PDF_EOF = Buffer.from('%%EOF');
 
 function isInside(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-function hasSupportedSignature(filename, bytes) {
+function rollingWindow(previous, bytes, limit) {
+  if (bytes.length >= limit) {
+    return Buffer.from(bytes.subarray(bytes.length - limit));
+  }
+  const previousLength = Math.min(previous.length, limit - bytes.length);
+  const window = Buffer.allocUnsafe(previousLength + bytes.length);
+  previous.copy(window, 0, previous.length - previousLength);
+  bytes.copy(window, previousLength);
+  return window;
+}
+
+function hasSupportedSignature(filename, inspection) {
   const extension = path.extname(filename).toLowerCase();
+  const { bytesRead, header, tail, hasPdfEof } = inspection;
   if (extension === '.pdf') {
-    return bytes.length >= 10 && bytes.subarray(0, 5).toString('ascii') === '%PDF-' && bytes.includes(Buffer.from('%%EOF'));
+    return bytesRead >= 10 && header.subarray(0, 5).toString('ascii') === '%PDF-' && hasPdfEof;
   }
   if (extension === '.png') {
-    return bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    return bytesRead >= 8 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
   }
   if (extension === '.jpg' || extension === '.jpeg') {
-    return bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9;
+    return bytesRead >= 4 && header[0] === 0xff && header[1] === 0xd8 && tail[0] === 0xff && tail[1] === 0xd9;
   }
   if (extension === '.tif' || extension === '.tiff') {
-    const littleEndian = bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00]));
-    const bigEndian = bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a]));
+    const littleEndian = bytesRead >= 4 && header.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00]));
+    const bigEndian = bytesRead >= 4 && header.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a]));
     return littleEndian || bigEndian;
   }
   if (extension === '.bmp') {
-    return bytes.length >= 2 && bytes.subarray(0, 2).toString('ascii') === 'BM';
+    return bytesRead >= 2 && header.subarray(0, 2).toString('ascii') === 'BM';
   }
   return false;
+}
+
+function inspectAttachmentFile(filename, filePath) {
+  const descriptor = openSync(filePath, 'r');
+  const digest = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(ATTACHMENT_CHUNK_BYTES);
+  const header = Buffer.alloc(SIGNATURE_HEADER_BYTES);
+  let headerLength = 0;
+  let tail = Buffer.alloc(0);
+  let pdfBoundary = Buffer.alloc(0);
+  let hasPdfEof = false;
+  let bytesRead = 0;
+  try {
+    while (true) {
+      const length = readSync(descriptor, buffer, 0, buffer.length, null);
+      if (length === 0) break;
+      const bytes = buffer.subarray(0, length);
+      digest.update(bytes);
+      bytesRead += length;
+      if (headerLength < SIGNATURE_HEADER_BYTES) {
+        const copyLength = Math.min(SIGNATURE_HEADER_BYTES - headerLength, length);
+        bytes.copy(header, headerLength, 0, copyLength);
+        headerLength += copyLength;
+      }
+      if (!hasPdfEof) {
+        hasPdfEof = bytes.includes(PDF_EOF);
+        if (!hasPdfEof && pdfBoundary.length > 0) {
+          const prefixLength = Math.min(PDF_EOF.length - 1, length);
+          const boundary = Buffer.allocUnsafe(pdfBoundary.length + prefixLength);
+          pdfBoundary.copy(boundary);
+          bytes.copy(boundary, pdfBoundary.length, 0, prefixLength);
+          hasPdfEof = boundary.includes(PDF_EOF);
+        }
+      }
+      pdfBoundary = rollingWindow(pdfBoundary, bytes, PDF_EOF.length - 1);
+      tail = rollingWindow(tail, bytes, 2);
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  const inspection = { bytesRead, header, tail, hasPdfEof };
+  return {
+    actualSha256: digest.digest('hex'),
+    supportedSignature: hasSupportedSignature(filename, inspection),
+  };
 }
 
 function indexMappings(mappings) {
@@ -87,8 +149,8 @@ function indexMappings(mappings) {
 function inspectAttachment({ attachment, filesRoot, mappedAttachment }) {
   const issues = [];
   const candidate = path.resolve(filesRoot, attachment.relative_path);
-  let bytes;
   let actualSha256 = null;
+  let supportedSignature = false;
 
   if (!isInside(filesRoot, candidate)) {
     issues.push('attachment_path_outside_root');
@@ -98,19 +160,23 @@ function inspectAttachment({ attachment, filesRoot, mappedAttachment }) {
       if (!isInside(filesRoot, actualPath)) {
         issues.push('attachment_path_outside_root');
       } else {
-        bytes = readFileSync(actualPath);
+        const inspection = inspectAttachmentFile(
+          attachment.relative_path || attachment.name,
+          actualPath,
+        );
+        actualSha256 = inspection.actualSha256;
+        supportedSignature = inspection.supportedSignature;
       }
     } catch {
       issues.push('attachment_missing');
     }
   }
 
-  if (bytes) {
-    actualSha256 = hash(bytes);
+  if (actualSha256) {
     if (actualSha256 !== attachment.sha256) {
       issues.push('attachment_hash_mismatch');
     }
-    if (!hasSupportedSignature(attachment.relative_path || attachment.name, bytes)) {
+    if (!supportedSignature) {
       issues.push('attachment_invalid');
     }
   }
