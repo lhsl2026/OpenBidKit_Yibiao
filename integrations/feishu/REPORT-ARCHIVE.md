@@ -1,6 +1,6 @@
 # 飞书预读报告持续归档
 
-启用后，每次后台 tick 从现有项目读取预读服务的 `GET /openapi/preread/tasks/:taskId/knowledge-publication`。沿用 relay Bearer 身份；不调用模型，也不重跑预读。接口提供正式 Markdown、内容哈希和来源摘要。只有内容哈希、文档版本、来源 SHA-256 和随后读取的 handoff 报告 ID 一致时才发布。
+启用后，每次后台 tick 从现有项目读取预读服务的 `GET /openapi/preread/tasks/:taskId/knowledge-publication`。沿用 relay Bearer 身份；不调用模型，也不重跑预读。接口提供正式 Markdown、内容哈希和来源摘要。只有内容哈希、文档版本、来源 SHA-256 和随后读取的 handoff 报告 ID、`snapshot.reportVersion` 一致时才发布。同一个报告 ID 的 r2/r3 也视为不同快照，旧卡片链接会立即撤销。
 
 ## 配置
 
@@ -23,6 +23,7 @@ BID_REPORT_CLI_IDENTITY=bot
 - 群权限验证完成才将 `reportUrl` 和 `reportArchive` 绑定到当前项目，并更新已有卡片。报告内容变化或来源验证失败先移除原链接。纯归档链接变化不会清除已有跟进决策或触发标书模型。
 - 原始 Markdown 保存在 `BID_DATA_ROOT/reports`；每个版本的状态、内容、目的地和导入结果保存在同一 `workflow.sqlite3` 的 `report-archive-job:*`。该数据库是幂等记录，部署迁移时必须保留，不能清空后重新启用。
 - 已知 ticket 持续查询原任务。未知导入结果或进程在导入阶段中断会转为 `manual/report_import_unknown`，禁止自动再次创建，并阻止向同一目的地开始后续导入。错误文本仅存固定错误码，不存 CLI 错误原文。
+- 升级前缺少 `reportVersion` 的同源任务会阻止新的导入，检查状态显示 `report_version_unverified`。运维必须根据独立核实的旧报告版本为原 SQLite job 补记 `reportVersion`（例如已核实的 `r2`）；模块不猜测该值。补记后完整身份相符的任务保留原 job ID、文档 token、文件和阶段，继续授权/验证，不会因新幂等 key 重复导入。
 - 权限写入失败也保留已有文档，通过读回确认是否已成功。无法核验则停在 `manual/report_permission_unverified`，不展示卡片链接。
 
 仅供持有 runner 租约的本地运维恢复（不暴露 HTTP 写接口）：

@@ -5,7 +5,7 @@ const {createReportArchive,createDriveArchiveClient}=require('../report-archive.
 const digest=s=>createHash('sha256').update(s).digest('hex');
 function setup(t,overrides={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'report-archive-')),store=createStore(path.join(root,'state.sqlite3'));t.after(()=>{store.close();fs.rmSync(root,{recursive:true,force:true});});
- const handoff={status:'ready',snapshot:{documentVersion:1,checksum:'sha256:'+digest('source'),reportId:'report-1'},task:{taskId:'task',title:'报告'},warnings:[]};
+ const handoff={status:'ready',snapshot:{documentVersion:1,checksum:'sha256:'+digest('source'),reportId:'report-1',reportVersion:'r1'},task:{taskId:'task',title:'报告'},warnings:[]};
  const project={id:'project',taskId:'task',companyId:'company',version:'1',checksum:handoff.snapshot.checksum,generatedAt:'2026-09-10',created:1,revision:1,input:{handoff},assessment:{decision:'review'}};store.saveProject(project);
  let now=1000,publication={status:'publication_required',projectKey:'project-key',title:'报告',documentVersion:1,markdownContent:'# 报告\n\n完整结果',knowledgeContent:{sourceTrace:{sha256:digest('source'),documentVersion:1}}};
  const updateHash=()=>publication.contentHash=digest(`${publication.projectKey}\n${publication.documentVersion}\n${publication.markdownContent}`);updateHash();
@@ -23,7 +23,7 @@ test('persists import once and binds card URL only after the target group permis
 });
 test('unknown import outcome survives restart and does not recreate even after content changes',async t=>{
  const x=setup(t);x.client.importMarkdown=async()=>{x.calls.import++;throw Error('secret remote failure');};await x.tick();x.restart();await x.tick(2);
- x.publication.markdownContent+=' changed';x.updateHash();await x.tick(2);assert.equal(x.calls.import,1);assert.equal(x.archive.list()[0].stage,'manual');assert.equal(x.archive.list()[0].error,'report_import_unknown');
+ x.publication.markdownContent+=' changed';x.updateHash();await x.tick(2);assert.equal(x.calls.import,1);const unknown=x.archive.list().find(j=>j.stage==='manual');assert.ok(unknown);assert.equal(unknown.error,'report_import_unknown');
  assert.ok(!JSON.stringify(x.archive.list()).includes('secret remote failure'));
 });
 test('pending ticket is polled after restart instead of a second import',async t=>{
@@ -58,4 +58,19 @@ test('publication GET uses relay authorization instead of handoff credentials',a
 });
 test('archive configuration requires an explicit approved folder and identity',()=>{
  const {loadConfig}=require('../config.cjs');assert.throws(()=>loadConfig({BID_REPORT_ARCHIVE_ENABLED:'true'}),/report_archive_not_configured/);
+});
+test('same report ID with a newer reportVersion cannot bind or reuse the older archive',async t=>{
+ const x=setup(t);await x.tick(4);assert.equal(x.store.getProject('project').input.reportArchive.reportVersion,'r1');
+ const p=x.store.getProject('project');p.input.handoff.snapshot.reportVersion='r2';x.store.db.prepare('UPDATE projects SET payload=? WHERE id=?').run(JSON.stringify(p.input),p.id);
+ await x.tick();assert.equal(x.calls.import,2);assert.equal(x.store.getProject('project').input.reportUrl,undefined);await x.tick(3);assert.equal(x.store.getProject('project').input.reportArchive.reportVersion,'r2');
+});
+test('fresh publication fence rejects a different reportVersion with identical reportId and checksum',async t=>{
+ const x=setup(t);x.preread.getHandoff=async()=>{const h=structuredClone(x.store.getProject('project').input.handoff);h.snapshot.reportVersion='r2';return h;};await x.tick();assert.equal(x.calls.import,0);
+});
+test('legacy imported job requires explicit version verification and then reuses its existing ID and document',async t=>{
+ const x=setup(t);await x.tick();const original=x.archive.list()[0],legacy={...original,id:'legacy-id'};delete legacy.reportVersion;
+ x.store.db.prepare('DELETE FROM settings WHERE key=?').run('report-archive-job:'+original.id);x.store.set('report-archive-job:'+legacy.id,legacy);
+ await x.tick(3);assert.equal(x.calls.import,1);assert.equal(x.calls.grant,0);assert.equal(x.store.get('report-archive-check:project').error,'report_version_unverified');
+ // Operator has independently verified r1; module must not compute a new ID and import again.
+ x.store.set('report-archive-job:'+legacy.id,{...legacy,reportVersion:'r1'});await x.tick(3);assert.equal(x.calls.import,1);assert.equal(x.store.getProject('project').input.reportArchive.id,'legacy-id');
 });

@@ -32,21 +32,22 @@ function createReportArchive({store,config,preread,client,assertOwnership=()=>{}
  const target=()=>key(options.profile,options.identity,options.folderToken,config.chatId);
  const save=job=>store.set(PREFIX+job.id,{...job,updatedAt:clock()});
  const active=p=>p?.current&&!p.input.handoff?.superseded&&p.input.sourceMessage?.status!=='edited_requires_review';
- const identity=p=>key(p.id,p.version,p.checksum,p.input.handoff.snapshot.reportId);
+ const identity=p=>key(p.id,p.version,p.checksum,p.input.handoff.snapshot.reportId,p.input.handoff.snapshot.reportVersion);
  function bind(project,job){
   const p=store.getProject(project.id);if(!active(p)||identity(p)!==identity(project))return;
-  const input={...p.input};if(job){input.reportUrl=job.url;input.reportArchive={id:job.id,contentHash:job.contentHash,reportId:job.reportId,documentVersion:job.documentVersion,checksum:job.checksum};}
+  const input={...p.input};if(job){input.reportUrl=job.url;input.reportArchive={id:job.id,contentHash:job.contentHash,reportId:job.reportId,reportVersion:job.reportVersion,documentVersion:job.documentVersion,checksum:job.checksum};}
   else{delete input.reportUrl;delete input.reportArchive;}
   if(JSON.stringify(input)===JSON.stringify(p.input))return;
   store.transaction(()=>{store.db.prepare('UPDATE projects SET payload=? WHERE id=?').run(JSON.stringify(input),p.id);store.touchCard(p.id,clock());});
  }
  async function publicationFor(p){
+  if(!validToken(p.input.handoff.snapshot.reportVersion))throw Error('report_version_unverified');
   const pub=await preread.getPublication(p.taskId),trace=pub?.knowledgeContent?.sourceTrace;
   if(!pub||!['publication_required','unchanged'].includes(pub.status)||typeof pub.projectKey!=='string'||!pub.projectKey||typeof pub.title!=='string'||!pub.title.trim()||!Number.isInteger(pub.documentVersion)||String(pub.documentVersion)!==p.version||typeof pub.markdownContent!=='string'||!pub.markdownContent.trim()||Buffer.byteLength(pub.markdownContent)>20*1024*1024||/[\uFFFD\u0000]/u.test(pub.markdownContent)||/\?{4,}/.test(pub.markdownContent))throw Error('report_publication_invalid');
   if(!/^[a-f0-9]{64}$/.test(pub.contentHash??'')||hash(`${pub.projectKey}\n${pub.documentVersion}\n${pub.markdownContent}`)!==pub.contentHash||checksum(trace?.sha256)!==checksum(p.checksum)||String(trace?.documentVersion)!==p.version)throw Error('report_publication_mismatch');
   // Publication uses latest report: fence it against a fresh handoff before any external write.
   const latest=await preread.getHandoff(p.taskId),snapshot=latest?.snapshot;
-  if(latest?.superseded||snapshot?.reportId!==p.input.handoff.snapshot.reportId||String(snapshot?.documentVersion)!==p.version||checksum(snapshot?.checksum)!==checksum(p.checksum))throw Error('report_publication_stale');
+  if(latest?.superseded||snapshot?.reportId!==p.input.handoff.snapshot.reportId||snapshot?.reportVersion!==p.input.handoff.snapshot.reportVersion||String(snapshot?.documentVersion)!==p.version||checksum(snapshot?.checksum)!==checksum(p.checksum))throw Error('report_publication_stale');
   return pub;
  }
  function localMarkdown(job){
@@ -77,9 +78,16 @@ function createReportArchive({store,config,preread,client,assertOwnership=()=>{}
    store.set('report-archive-check:'+p.id,{nextAt:clock()+60000});
    let pub;try{pub=await publicationFor(p);}catch{own();bind(p,null);store.set('report-archive-check:'+p.id,{nextAt:clock()+60000,error:'report_publication_unavailable'});return;}
    own();const current=store.getProject(p.id);if(!active(current)||identity(current)!==identity(p))return;
-   const id=key('report-archive',target(),identity(p),pub.contentHash);let job=store.get(PREFIX+id);
+   const reportVersion=p.input.handoff.snapshot.reportVersion;
+   const sameSource=j=>j.target===target()&&j.projectId===p.id&&j.reportId===p.input.handoff.snapshot.reportId&&String(j.documentVersion)===p.version&&j.checksum===p.checksum;
+   const prior=list().filter(sameSource);
+   // Old records retain their original ID/file/token. Only an explicitly verified version
+   // permits migration; never infer it from today's handoff and accidentally create a duplicate.
+   if(prior.some(j=>!validToken(j.reportVersion))){bind(p,null);store.set('report-archive-check:'+p.id,{nextAt:clock()+60000,error:'report_version_unverified'});return;}
+   let id=key('report-archive',target(),identity(p),pub.contentHash),job=store.get(PREFIX+id);
+   if(!job){const matches=prior.filter(j=>j.reportVersion===reportVersion&&j.contentHash===pub.contentHash);if(matches.length>1){bind(p,null);store.set('report-archive-check:'+p.id,{nextAt:clock()+60000,error:'report_archive_ambiguous'});return;}if(matches.length===1){job=matches[0];id=job.id;}}
    if(p.input.reportArchive?.id!==id)bind(p,null);
-   if(!job){job={id,projectId:p.id,taskId:p.taskId,reportId:p.input.handoff.snapshot.reportId,checksum:p.checksum,documentVersion:pub.documentVersion,projectKey:pub.projectKey,contentHash:pub.contentHash,markdownContent:pub.markdownContent,title:pub.title.slice(0,60)+' — 预读报告 v'+pub.documentVersion+' '+pub.contentHash.slice(0,8),target:target(),folderToken:options.folderToken,chatId:config.chatId,stage:'queued',createdAt:clock()};save(job);}
+   if(!job){job={id,projectId:p.id,taskId:p.taskId,reportId:p.input.handoff.snapshot.reportId,reportVersion,checksum:p.checksum,documentVersion:pub.documentVersion,projectKey:pub.projectKey,contentHash:pub.contentHash,markdownContent:pub.markdownContent,title:pub.title.slice(0,60)+' — 预读报告 v'+pub.documentVersion+' '+reportVersion+' '+pub.contentHash.slice(0,8),target:target(),folderToken:options.folderToken,chatId:config.chatId,stage:'queued',createdAt:clock()};save(job);}
    if(job.target!==target())return;
    const drive=client??createDriveArchiveClient(options);
    if(job.stage==='published'){bind(p,job);return;}

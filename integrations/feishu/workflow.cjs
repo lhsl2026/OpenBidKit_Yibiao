@@ -5,6 +5,20 @@ function validateInput(input){
   if(h.superseded||h.latestDocumentVersion!==s.documentVersion)throw new Error('stale_handoff');
 }
 function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now,chatId,operatorIds=[]}){
+  const normalize=input=>{
+    input=normalizeInput(input);
+    const previous=store.current(input.handoff.task.taskId,input.companyId),archive=previous?.input.reportArchive;
+    if(!archive&&!input.reportArchive)return input;
+    const snapshot=input.handoff.snapshot;
+    // Archive metadata belongs to the local verified publication, not the watch payload.
+    // Preserve it on unchanged polls, but never carry it onto a regenerated report.
+    if(archive&&archive.reportId===snapshot.reportId&&typeof archive.reportVersion==='string'&&archive.reportVersion&&archive.reportVersion===snapshot.reportVersion&&String(archive.documentVersion)===String(snapshot.documentVersion)&&archive.checksum===snapshot.checksum&&input.sourceMessage?.status!=='edited_requires_review'){
+      return {...input,reportUrl:previous.input.reportUrl,reportArchive:archive};
+    }
+    const next={...input};delete next.reportArchive;
+    if(input.reportArchive||input.reportUrl===previous?.input.reportUrl)delete next.reportUrl;
+    return next;
+  };
   const assessed=input=>{
     const value=assess(input);
     if(input?.sourceMessage?.status!=='edited_requires_review')return value;
@@ -12,13 +26,13 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
   };
   function revalidate(id){return store.transaction(()=>{
     const p=store.getProject(id);if(!p?.current)return p;
-    const input=normalizeInput(p.input),assessment=assessed(input);
+    const input=normalize(p.input),assessment=assessed(input);
     if(JSON.stringify(p.input)!==JSON.stringify(input)||JSON.stringify(p.assessment)!==JSON.stringify(assessment))return store.reassess(id,assessment,clock(),input);
     return p;
   });}
   return {
     revalidate,
-    ingest(input){validateInput(input);input=normalizeInput(input);return store.transaction(()=>{
+    ingest(input){validateInput(input);input=normalize(input);return store.transaction(()=>{
       const h=input.handoff,s=h.snapshot,now=clock();const version=String(s.documentVersion);const id=key(h.task.taskId,input.companyId,version);
       const existing=store.getProject(id);const assessment=assessed(input);
       if(existing){if(!existing.current)throw new Error('stale_handoff');if(existing.checksum!==s.checksum)throw new Error('version_conflict');if(JSON.stringify(existing.assessment)!==JSON.stringify(assessment)||JSON.stringify(existing.input)!==JSON.stringify(input))return store.reassess(id,assessment,now,input);return existing;}
