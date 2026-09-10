@@ -17,6 +17,19 @@ function basicFact(requirements, label, pattern, categories = ['basic']) {
   return { label, value: row ? short(row.value, 100) : '待核实' };
 }
 
+const digest = value => String(value ?? '').replace(/^sha256:/iu, '').toLowerCase();
+function decisionFields(project, handoff) {
+  const facts = project.input?.decisionFacts, binding = facts?.binding, snapshot = handoff?.snapshot;
+  if (facts?.schemaVersion !== 1 || !binding || !snapshot || binding.reportId !== snapshot.reportId || binding.reportVersion !== snapshot.reportVersion || String(binding.documentVersion) !== String(snapshot.documentVersion) || digest(binding.checksum) !== digest(snapshot.checksum) || digest(binding.checksum) !== digest(project.checksum)) return null;
+  return facts.fields && typeof facts.fields === 'object' ? facts.fields : null;
+}
+function preferredFact(fields, key, fallback) {
+  const item = fields?.[key];
+  if (!item || !['confirmed', 'review', 'missing'].includes(item.status) || typeof item.value !== 'string' || !item.value.trim()) return fallback;
+  if (item.status === 'missing') return { ...fallback, value: '待核实' };
+  return { ...fallback, value: `${item.status === 'review' ? '待复核：' : ''}${short(item.value, 120)}` };
+}
+
 function gateLabel(requirement) {
   const text = `${requirement?.key ?? ''} ${requirement?.value ?? ''}`;
   if (/人员|项目负责人|项目经理|工程师|建造师|注册证|职称/.test(text)) return '人员证书';
@@ -59,6 +72,7 @@ function deadlineSummary(value, now = Date.now()) {
 function buildDecisionBrief(project, { now = Date.now() } = {}) {
   const handoff = project.input?.handoff ?? {};
   const requirements = Array.isArray(handoff.requirements) ? handoff.requirements : [];
+  const fields = decisionFields(project, handoff);
   const assessment = project.assessment ?? {};
   const assessmentItems = Array.isArray(assessment.items) ? assessment.items : [];
   const itemByRequirement = new Map(assessmentItems.filter((item) => item.requirementId).map((item) => [item.requirementId, item]));
@@ -108,14 +122,16 @@ function buildDecisionBrief(project, { now = Date.now() } = {}) {
     eligibility: verdictLabels[assessment.decision] ?? verdictLabels.review,
     commercial: '待测算（缺少完整成本、报价或竞争依据）',
     deadline: deadlineSummary(project.input?.deadline, now),
-    facts: [
-      basicFact(requirements, '招标人', /招标人|采购人/),
-      basicFact(requirements, '预算/最高限价', /预算|最高限价|控制价/),
-      basicFact(requirements, '工期/服务期', /工期|服务期|交货期|交付期/, ['basic', 'contract', 'commercial']),
-      basicFact(requirements, '付款条件', /付款|支付|结算/, ['basic', 'contract', 'commercial']),
-      basicFact(requirements, '评审办法', /评标|评审办法|综合评分|最低价/),
-      basicFact(requirements, '投标保证金', /保证金/),
-    ],
+    facts: (() => {
+      const owner = basicFact(requirements, '招标人', /招标人|采购人/);
+      const budget = preferredFact(fields, 'budget', basicFact(requirements, '预算/最高限价', /预算|最高限价|控制价/));
+      const duration = preferredFact(fields, 'duration', basicFact(requirements, '工期/服务期', /工期|服务期|交货期|交付期/, ['basic', 'contract', 'commercial']));
+      const payment = preferredFact(fields, 'payment', basicFact(requirements, '付款条件', /付款|支付|结算/, ['basic', 'contract', 'commercial']));
+      const evaluation = preferredFact(fields, 'evaluationMethod', basicFact(requirements, '评审办法', /评标|评审办法|综合评分|最低价/));
+      const bond = preferredFact(fields, 'bidBond', basicFact(requirements, '投标保证金', /投标保证金|保证金金额/));
+      const closure = preferredFact(fields, 'scoreClosure', { label: '评分闭合', value: '待核实' });
+      return [owner, budget, duration, payment, evaluation, bond, closure];
+    })(),
     gateCounts,
     risks: risks.slice(0, 3),
     actions: [...new Set(actions)].slice(0, 3),

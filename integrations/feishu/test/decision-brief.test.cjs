@@ -29,3 +29,23 @@ test('the top three risks omit non-blocking disclosures and surface evidence che
   assert.match(risks,/财务能力/);
   assert.match(risks.split('\n')[0],/财务能力/);
 });
+test('version-bound decision facts override lossy handoff keyword extraction',()=>{
+ const binding={reportId:'report-1',reportVersion:'r2',documentVersion:1,checksum:'a'.repeat(64)};
+ const decisionFacts={schemaVersion:1,binding,fields:{
+  budget:{status:'confirmed',value:'595,000元（预算/最高限价）',evidence:[]},
+  duration:{status:'confirmed',value:'合同签订后30日历天',evidence:[]},
+  payment:{status:'review',value:'验收后支付97%，运行12个月后支付3%',evidence:[]},
+  evaluationMethod:{status:'review',value:'评审办法名称待核实；已识别价格30分',evidence:[]},
+  bidBond:{status:'confirmed',value:'0元',evidence:[]},
+  scoreClosure:{status:'review',value:'未闭合；已识别价格30分',evidence:[]},
+ }};
+ const project={companyId:'隆创信息有限公司',version:'1',checksum:'sha256:'+binding.checksum,input:{decisionFacts,handoff:{task:{title:'测试'},snapshot:{...binding},requirements:[{id:'wrong',key:'预算',category:'basic',value:'错误旧值'}]}},assessment:{decision:'review',items:[]}};
+ const brief=buildDecisionBrief(project);
+ assert.equal(brief.facts.find(f=>f.label==='预算/最高限价').value,'595,000元（预算/最高限价）');
+ assert.equal(brief.facts.find(f=>f.label==='付款条件').value,'待复核：验收后支付97%，运行12个月后支付3%');
+ assert.equal(brief.facts.find(f=>f.label==='评分闭合').value,'待复核：未闭合；已识别价格30分');
+});
+test('stale decision facts are ignored after a report version changes',()=>{
+ const project={companyId:'隆创信息有限公司',version:'1',checksum:'a'.repeat(64),input:{decisionFacts:{schemaVersion:1,binding:{reportId:'r',reportVersion:'old',documentVersion:1,checksum:'a'.repeat(64)},fields:{budget:{status:'confirmed',value:'错误旧值',evidence:[]}}},handoff:{task:{title:'测试'},snapshot:{reportId:'r',reportVersion:'new',documentVersion:1,checksum:'a'.repeat(64)},requirements:[]}},assessment:{decision:'review',items:[]}};
+ assert.equal(buildDecisionBrief(project).facts.find(f=>f.label==='预算/最高限价').value,'待核实');
+});

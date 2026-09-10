@@ -2,6 +2,7 @@
 const fs=require('node:fs');const path=require('node:path');const {createHash}=require('node:crypto');
 const {execFile}=require('node:child_process');const {promisify}=require('node:util');const {key}=require('./store.cjs');
 const {composeDecisionReport}=require('./decision-brief.cjs');
+const {extractDecisionFacts}=require('./decision-facts.cjs');
 const run=promisify(execFile),PREFIX='report-archive-job:';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const validToken=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,256}$/.test(value);
@@ -40,6 +41,12 @@ function createReportArchive({store,config,preread,client,assertOwnership=()=>{}
   else{delete input.reportUrl;delete input.reportArchive;}
   if(JSON.stringify(input)===JSON.stringify(p.input))return;
   store.transaction(()=>{store.db.prepare('UPDATE projects SET payload=? WHERE id=?').run(JSON.stringify(input),p.id);store.touchCard(p.id,clock());});
+ }
+ function bindDecisionFacts(project,decisionFacts){
+  const p=store.getProject(project.id);if(!active(p)||identity(p)!==identity(project))return project;
+  const input={...p.input,decisionFacts};if(JSON.stringify(input)===JSON.stringify(p.input))return p;
+  store.transaction(()=>{store.db.prepare('UPDATE projects SET payload=? WHERE id=?').run(JSON.stringify(input),p.id);store.touchCard(p.id,clock());});
+  return{...p,input};
  }
  async function publicationFor(p){
   if(!validToken(p.input.handoff.snapshot.reportVersion))throw Error('report_version_unverified');
@@ -80,6 +87,8 @@ function localMarkdown(job){
    store.set('report-archive-check:'+p.id,{nextAt:clock()+60000});
    let pub;try{pub=await publicationFor(p);}catch{own();bind(p,null);store.set('report-archive-check:'+p.id,{nextAt:clock()+60000,error:'report_publication_unavailable'});return;}
    own();const current=store.getProject(p.id);if(!active(current)||identity(current)!==identity(p))return;
+   const decisionFacts=extractDecisionFacts(pub.knowledgeContent,{reportId:p.input.handoff.snapshot.reportId,reportVersion:p.input.handoff.snapshot.reportVersion,documentVersion:pub.documentVersion,checksum:p.checksum});
+   const decisionProject=bindDecisionFacts(current,decisionFacts);
    const reportVersion=p.input.handoff.snapshot.reportVersion;
    const sameSource=j=>j.target===target()&&j.projectId===p.id&&j.reportId===p.input.handoff.snapshot.reportId&&String(j.documentVersion)===p.version&&j.checksum===p.checksum;
    const prior=list().filter(sameSource);
@@ -89,7 +98,7 @@ function localMarkdown(job){
    let id=key('report-archive',target(),identity(p),pub.contentHash),job=store.get(PREFIX+id);
    if(!job){const matches=prior.filter(j=>j.reportVersion===reportVersion&&j.contentHash===pub.contentHash);if(matches.length>1){bind(p,null);store.set('report-archive-check:'+p.id,{nextAt:clock()+60000,error:'report_archive_ambiguous'});return;}if(matches.length===1){job=matches[0];id=job.id;}}
    if(p.input.reportArchive?.id!==id)bind(p,null);
-   if(!job){job={id,projectId:p.id,taskId:p.taskId,reportId:p.input.handoff.snapshot.reportId,reportVersion,checksum:p.checksum,documentVersion:pub.documentVersion,projectKey:pub.projectKey,contentHash:pub.contentHash,sourceMarkdownContent:pub.markdownContent,markdownContent:composeDecisionReport(p,pub.markdownContent,{now:clock()}),formatVersion:'decision-brief-v1',title:pub.title.slice(0,60)+' — 预读报告 v'+pub.documentVersion+' '+reportVersion+' '+pub.contentHash.slice(0,8),target:target(),folderToken:options.folderToken,chatId:config.chatId,stage:'queued',createdAt:clock()};save(job);}
+   if(!job){job={id,projectId:p.id,taskId:p.taskId,reportId:p.input.handoff.snapshot.reportId,reportVersion,checksum:p.checksum,documentVersion:pub.documentVersion,projectKey:pub.projectKey,contentHash:pub.contentHash,decisionFacts,sourceMarkdownContent:pub.markdownContent,markdownContent:composeDecisionReport(decisionProject,pub.markdownContent,{now:clock()}),formatVersion:'decision-brief-v2',title:pub.title.slice(0,60)+' — 预读报告 v'+pub.documentVersion+' '+reportVersion+' '+pub.contentHash.slice(0,8),target:target(),folderToken:options.folderToken,chatId:config.chatId,stage:'queued',createdAt:clock()};save(job);}
    if(job.target!==target())return;
    const drive=client??createDriveArchiveClient(options);
    if(job.stage==='published'){bind(p,job);return;}

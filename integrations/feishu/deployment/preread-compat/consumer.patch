@@ -222,8 +222,51 @@ index 2be8543..86e214c 100644
          )
        : [
            '| 未识别 | 未识别到资格要求 | 待人工确认 | 待人工确认 | 待确认 | 待人工确认 | 补齐资格条款提取 | 待定位 |',
+diff --git a/server/modules/preread/preread-knowledge-report.spec.ts b/server/modules/preread/preread-knowledge-report.spec.ts
+index 442216d..b53e2a1 100644
+--- a/server/modules/preread/preread-knowledge-report.spec.ts
++++ b/server/modules/preread/preread-knowledge-report.spec.ts
+@@ -851,6 +851,38 @@ describe('buildPrereadKnowledgeReport', () => {
+     expect(model.basicInformation.tenderCode.value).toBe('未识别');
+   });
+ 
++  it('从带括号单位的预算和最高限价标签恢复基础金额', () => {
++    const model = buildPrereadKnowledgeReportFromTenderArtifacts(
++      {
++        ...completeContext(),
++        findings: [],
++        manualActions: [],
++      },
++      {
++        runId: 'run-basic-budget-parenthesized-unit',
++        verifiedClauses: [
++          {
++            clauseId: 'basic-budget-parenthesized-unit',
++            clauseNo: '',
++            statement: '595000.00元 最高限价（元）：595000.00元',
++            internalReviewCategory: 'basic_information',
++            matrixTypes: [],
++            page: 7,
++            quote: '预算金额（元）：595000.00元 最高限价（元）：595000.00元',
++            section: '项目基本情况',
++            confidence: 0.99,
++            evidenceStatus: 'verified',
++          },
++        ],
++        manualReviewClauses: [],
++      },
++    );
++
++    expect(model.basicInformation.budgetOrCeiling.value).toBe(
++      '595000.00元 最高限价（元）：595000.00元',
++    );
++  });
++
+   it('拒绝把“见投标人须知前附表”交叉引用识别为项目名称', () => {
+     const title =
+       '铜仁职业技术大学教学科研仪器设备更新项目第Ⅱ标段（8包物联网实训设备包）二次设备采购';
 diff --git a/server/modules/preread/preread-knowledge-report.ts b/server/modules/preread/preread-knowledge-report.ts
-index 65b90ed..38e7ced 100644
+index 65b90ed..6cbeb3a 100644
 --- a/server/modules/preread/preread-knowledge-report.ts
 +++ b/server/modules/preread/preread-knowledge-report.ts
 @@ -157,8 +157,8 @@ export interface QualificationReportItem {
@@ -295,6 +338,15 @@ index 65b90ed..38e7ced 100644
      )
    ) {
      return {
+@@ -1496,7 +1497,7 @@ const tenderExplicitBasicValue = (
+       );
+     case 'budgetOrCeiling':
+       return extract(
+-        /(?:预算金额|采购预算|最高限价|招标控制价)\s*(?:[：:]|(?:为|是)\s*[：:]?)\s*([\s\S]+?)(?=\s*(?:采购需求|采购范围|合同履行期限|合同履约期限|履约期限|工期|服务期|交付期|供货期|本项目\s*[（(]?\s*是\s*[/／])\s*[：:]?|$)/u,
++        /(?:预算金额|采购预算|最高限价|招标控制价)\s*(?:[（(]\s*元\s*[）)])?\s*(?:[：:]|(?:为|是)\s*[：:]?)\s*([\s\S]+?)(?=\s*(?:采购需求|采购范围|合同履行期限|合同履约期限|履约期限|工期|服务期|交付期|供货期|本项目\s*[（(]?\s*是\s*[/／])\s*[：:]?|$)/u,
+       );
+     case 'duration':
+       return extract(
 @@ -2111,7 +2112,9 @@ export const buildPrereadKnowledgeReport = (
              ? { companyMatches: allCompanyMatches }
              : {}),
@@ -455,10 +507,38 @@ index 5e6e33a..ecf8333 100644
      const database = new TransactionalDatabaseFake();
      const persistence = new PrereadParserDatabasePersistence(database as never);
 diff --git a/server/modules/preread/preread-parser.service.spec.ts b/server/modules/preread/preread-parser.service.spec.ts
-index 1c467f2..f77eeb0 100644
+index 1c467f2..0dadb4a 100644
 --- a/server/modules/preread/preread-parser.service.spec.ts
 +++ b/server/modules/preread/preread-parser.service.spec.ts
-@@ -983,7 +983,7 @@ describe('PrereadParserService', () => {
+@@ -882,6 +882,27 @@ describe('PrereadParserService', () => {
+     );
+   });
+ 
++  it('recovers budget fields when the yuan unit is inside full-width parentheses', async () => {
++    const persistence = new InMemoryPrereadParserPersistence();
++    persistence.retryParsedText = '采购项目资格页\n预算金额（元）：595000.00元';
++    let preparedFindings: PrereadReportFindingContext[] = [];
++    const service = new PrereadParserService(
++      createCapabilityService(), persistence, undefined,
++      { prepare: async (_taskId, findings) => {
++        preparedFindings = findings;
++        return { taskId: 'task-1', documentVersion: 3, markdownContent: '# 报告', knowledgeContent: { title: '报告' } } as unknown as NewPrereadReport;
++      } } as unknown as PrereadReportService,
++    );
++    const facts = { ...emptyExtractedFacts(), 资格条件: [{ statement: '采购项目资格页', section: '项目基本信息', page: 6, quote: '采购项目资格页', confidence: 0.99 }] } as never;
++
++    await service.finalizePreparedFactExtraction('task-1', 'document-1', [facts]);
++
++    expect(preparedFindings).toEqual(expect.arrayContaining([expect.objectContaining({
++      status: 'confirmed', basicField: 'budgetOrCeiling', statement: '595000.00元', page: 6,
++      quote: '预算金额（元）：595000.00元',
++    })]));
++  });
++
+   it('does not confirm an explicit basic field when no verified page anchor exists', async () => {
+     const persistence = new InMemoryPrereadParserPersistence();
+     persistence.retryParsedText = [
+@@ -983,7 +1004,7 @@ describe('PrereadParserService', () => {
      ]);
    });
  
@@ -467,7 +547,7 @@ index 1c467f2..f77eeb0 100644
      const persistence = new InMemoryPrereadParserPersistence();
      const previousFinding = {
        findingType: '资格条件',
-@@ -1012,7 +1012,7 @@ describe('PrereadParserService', () => {
+@@ -1012,7 +1033,7 @@ describe('PrereadParserService', () => {
      );
  
      await expect(
@@ -476,7 +556,7 @@ index 1c467f2..f77eeb0 100644
      ).resolves.toEqual({ status: 'partial', findingCount: 1 });
      expect(persistence.findings).toEqual([previousFinding]);
      expect(persistence.factExtractionRetryFinalizations).toEqual([]);
-@@ -1025,7 +1025,7 @@ describe('PrereadParserService', () => {
+@@ -1025,7 +1046,7 @@ describe('PrereadParserService', () => {
      ]);
    });
  
@@ -485,7 +565,7 @@ index 1c467f2..f77eeb0 100644
      const persistence = new InMemoryPrereadParserPersistence();
      const previousFinding = {
        findingType: '资格条件',
-@@ -1045,7 +1045,7 @@ describe('PrereadParserService', () => {
+@@ -1045,7 +1066,7 @@ describe('PrereadParserService', () => {
      );
  
      await expect(
@@ -494,7 +574,7 @@ index 1c467f2..f77eeb0 100644
      ).resolves.toEqual({ status: 'partial', findingCount: 1 });
      expect(persistence.findings).toEqual([previousFinding]);
      expect(persistence.factExtractionRetryFinalizations).toEqual([]);
-@@ -1058,7 +1058,7 @@ describe('PrereadParserService', () => {
+@@ -1058,7 +1079,7 @@ describe('PrereadParserService', () => {
      ]);
    });
  
@@ -503,7 +583,7 @@ index 1c467f2..f77eeb0 100644
      const persistence = new InMemoryPrereadParserPersistence();
      const previousFinding = {
        findingType: '资格条件',
-@@ -1084,7 +1084,7 @@ describe('PrereadParserService', () => {
+@@ -1084,7 +1105,7 @@ describe('PrereadParserService', () => {
      );
  
      await expect(
@@ -512,7 +592,7 @@ index 1c467f2..f77eeb0 100644
      ).resolves.toEqual({ status: 'partial', findingCount: 1 });
      expect(persistence.findings).toEqual([previousFinding]);
      expect(reportPreparationCalls).toBe(0);
-@@ -1097,7 +1097,7 @@ describe('PrereadParserService', () => {
+@@ -1097,7 +1118,7 @@ describe('PrereadParserService', () => {
      ]);
    });
  
@@ -521,7 +601,7 @@ index 1c467f2..f77eeb0 100644
      const persistence = new InMemoryPrereadParserPersistence();
      const previousFinding = {
        findingType: '资格条件',
-@@ -1132,7 +1132,7 @@ describe('PrereadParserService', () => {
+@@ -1132,7 +1153,7 @@ describe('PrereadParserService', () => {
      );
  
      await expect(
@@ -530,7 +610,7 @@ index 1c467f2..f77eeb0 100644
      ).resolves.toEqual({ status: 'partial', findingCount: 1 });
      expect(persistence.findings).toEqual([previousFinding]);
      expect(persistence.factExtractionRetryFinalizations).toEqual([]);
-@@ -1525,7 +1525,9 @@ describe('PrereadParserService', () => {
+@@ -1525,7 +1546,9 @@ describe('PrereadParserService', () => {
      expect(persistence.findings[0]).toEqual({
        findingType: '资格条件',
        finding: {
@@ -541,7 +621,7 @@ index 1c467f2..f77eeb0 100644
          statement: '投标人应具备 AAA 资质',
          evidence: {
            documentVersion: 3,
-@@ -2945,7 +2947,7 @@ describe('PrereadParserService', () => {
+@@ -2945,7 +2968,7 @@ describe('PrereadParserService', () => {
      });
    });
  
@@ -550,7 +630,7 @@ index 1c467f2..f77eeb0 100644
      const persistence = new InMemoryPrereadParserPersistence();
      const service = new PrereadParserService(
        createCapabilityService({
-@@ -3017,10 +3019,11 @@ describe('PrereadParserService', () => {
+@@ -3017,10 +3040,11 @@ describe('PrereadParserService', () => {
  
      await expect(
        service.parseAndPersist({ taskId: 'task-1', documentId: 'document-1' }),
@@ -565,7 +645,7 @@ index 1c467f2..f77eeb0 100644
  
    it('keeps the complete scoring section when it exceeds the business-summary budget', async () => {
 diff --git a/server/modules/preread/preread-parser.service.ts b/server/modules/preread/preread-parser.service.ts
-index 1291a59..339533e 100644
+index 1291a59..4e67ab5 100644
 --- a/server/modules/preread/preread-parser.service.ts
 +++ b/server/modules/preread/preread-parser.service.ts
 @@ -38,7 +38,7 @@ import {
@@ -784,6 +864,15 @@ index 1291a59..339533e 100644
    return facts;
  };
  
+@@ -1521,7 +1568,7 @@ const BASIC_FIELD_SOURCE_PATTERNS: ReadonlyArray<{
+   { field: 'agencyName', pattern: /(?:采\s*购\s*代理\s*机构|招\s*标\s*代理\s*机构|代理机构)(?:信息)?\s*[：:]\s*([^\r\n|]{1,160})/u },
+   { field: 'location', pattern: /(?:建设地点|项目地点|实施地点|交付地点|交货地点|服务地点)\s*[：:]\s*([^\r\n|]{1,160})/u },
+   { field: 'projectScale', pattern: /(?:项目规模|建设规模|采购规模)\s*[：:]\s*([^\r\n|]{1,200})/u },
+-  { field: 'budgetOrCeiling', pattern: /(?:预算金额|最高限价|招标控制价)\s*[：:]\s*([^\r\n|]{1,160})/u },
++  { field: 'budgetOrCeiling', pattern: /(?:预算金额|最高限价|招标控制价)\s*(?:[（(]\s*(?:元|万元)\s*[)）])?\s*[：:]\s*([^\r\n|]{1,160})/u },
+   { field: 'duration', pattern: /(?:工期|交货期|交付期|服务期|合同履行期限|合同履约期限)\s*[：:]\s*([^\r\n|]{1,200})/u },
+   {
+     field: 'bidDeadline',
 @@ -1772,7 +1819,7 @@ const isExtractedFindingEntry = (
      row: value.row as number | undefined,
    });
@@ -1098,6 +1187,80 @@ index 3aafb29..6b8f32a 100644
    @Post('tasks/:taskId/retry-fact-extraction')
    async retryFactExtraction(
      @Param() params: PrereadManualDocumentTaskParamDto,
+diff --git a/server/modules/preread/preread-report.database-store.spec.ts b/server/modules/preread/preread-report.database-store.spec.ts
+index 07ddad1..9db0df7 100644
+--- a/server/modules/preread/preread-report.database-store.spec.ts
++++ b/server/modules/preread/preread-report.database-store.spec.ts
+@@ -783,6 +783,29 @@ describe('PrereadReportDatabaseStore', () => {
+     );
+   });
+ 
++  it('restores a legacy basic field from its explicit evidence label', async () => {
++    const legacyBudgetFinding = {
++      ...findingRow,
++      id: 'finding-legacy-budget',
++      findingType: '项目基础信息',
++      statement: '预算金额为595000.00元。',
++      quote: '预算金额（元）：595000.00元',
++      payload: {},
++    };
++    const store = new PrereadReportDatabaseStore(
++      new ReportDatabaseFake([documentRow], [legacyBudgetFinding], []) as never,
++    );
++
++    const loaded = await store.loadContext('task-1');
++
++    expect(loaded.findings[0]).toEqual(
++      expect.objectContaining({
++        id: 'finding-legacy-budget',
++        basicField: 'budgetOrCeiling',
++      }),
++    );
++  });
++
+   it('keeps a processing lease visible as an active manual action', async () => {
+     const processingManualRow = {
+       ...manualRow,
+diff --git a/server/modules/preread/preread-report.database-store.ts b/server/modules/preread/preread-report.database-store.ts
+index 8fcbfee..23af028 100644
+--- a/server/modules/preread/preread-report.database-store.ts
++++ b/server/modules/preread/preread-report.database-store.ts
+@@ -111,6 +111,18 @@ const toAnnouncementMetadata = (
+   };
+ };
+ 
++const legacyBasicField = (
++  finding: typeof prereadFindings.$inferSelect,
++): PrereadReportFindingContext['basicField'] | undefined => {
++  if (finding.findingType !== '项目基础信息') return undefined;
++  const evidenceText = `${finding.quote ?? ''}\n${finding.statement}`;
++  return /(?:预算金额|采购预算|最高限价|招标控制价)\s*(?:[（(]\s*(?:元|万元)\s*[）)])?\s*(?:[：:]|为|是)/u.test(
++    evidenceText,
++  )
++    ? 'budgetOrCeiling'
++    : undefined;
++};
++
+ const toFindingContext = (
+   finding: typeof prereadFindings.$inferSelect,
+ ): PrereadReportFindingContext => {
+@@ -129,6 +141,8 @@ const toFindingContext = (
+     payload,
+     finding.findingType,
+   );
++  const recoveredBasicField =
++    structured.basicField ?? legacyBasicField(finding);
+   return {
+     id: finding.id,
+     findingType: finding.findingType,
+@@ -149,6 +163,7 @@ const toFindingContext = (
+       : {}),
+     ...(commercial ? { commercial } : {}),
+     ...structured,
++    ...(recoveredBasicField ? { basicField: recoveredBasicField } : {}),
+   };
+ };
+ 
 diff --git a/server/modules/preread/preread-report.service.spec.ts b/server/modules/preread/preread-report.service.spec.ts
 index eca96ce..d675d19 100644
 --- a/server/modules/preread/preread-report.service.spec.ts

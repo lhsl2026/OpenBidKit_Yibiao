@@ -29,6 +29,14 @@ test('newly archived reports start with the decision brief and retain the source
  assert.match(imported,/商务判断：待测算/);
  assert.match(imported,/## 详细证据附录[\s\S]*# 报告[\s\S]*完整结果/);
 });
+test('archives bind structured decision facts to the exact report version before rendering',async t=>{
+ const x=setup(t);x.publication.knowledgeContent.contractRequirements=[{id:'pay',requirement:'验收后支付97%，运行12个月后支付3%。',evidence:{page:15,quote:'付款方式：验收后支付97%，运行12个月后支付3%。',section:'付款方式',fileName:'招标文件.pdf',confidence:1,documentVersion:1}}];
+ let imported='';x.client.importMarkdown=async({sourcePath})=>{x.calls.import++;imported=fs.readFileSync(sourcePath,'utf8');return{ready:true,token:'doc123',url:'https://tenant.feishu.cn/docx/doc123'};};
+ await x.tick();const facts=x.store.getProject('project').input.decisionFacts;
+ assert.deepEqual(facts.binding,{reportId:'report-1',reportVersion:'r1',documentVersion:1,checksum:'sha256:'+digest('source')});
+ assert.equal(facts.fields.payment.status,'confirmed');
+ assert.match(imported,/付款条件：验收后支付97%，运行12个月后支付3%/);
+});
 test('unknown import outcome survives restart and does not recreate even after content changes',async t=>{
  const x=setup(t);x.client.importMarkdown=async()=>{x.calls.import++;throw Error('secret remote failure');};await x.tick();x.restart();await x.tick(2);
  x.publication.markdownContent+=' changed';x.updateHash();await x.tick(2);assert.equal(x.calls.import,1);const unknown=x.archive.list().find(j=>j.stage==='manual');assert.ok(unknown);assert.equal(unknown.error,'report_import_unknown');
