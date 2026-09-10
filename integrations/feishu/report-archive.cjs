@@ -1,6 +1,7 @@
 'use strict';
 const fs=require('node:fs');const path=require('node:path');const {createHash}=require('node:crypto');
 const {execFile}=require('node:child_process');const {promisify}=require('node:util');const {key}=require('./store.cjs');
+const {composeDecisionReport}=require('./decision-brief.cjs');
 const run=promisify(execFile),PREFIX='report-archive-job:';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const validToken=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,256}$/.test(value);
@@ -50,9 +51,10 @@ function createReportArchive({store,config,preread,client,assertOwnership=()=>{}
   if(latest?.superseded||snapshot?.reportId!==p.input.handoff.snapshot.reportId||snapshot?.reportVersion!==p.input.handoff.snapshot.reportVersion||String(snapshot?.documentVersion)!==p.version||checksum(snapshot?.checksum)!==checksum(p.checksum))throw Error('report_publication_stale');
   return pub;
  }
- function localMarkdown(job){
+function localMarkdown(job){
   const sourcePath=path.join(root,job.id+'.md'),bytes=Buffer.from(job.markdownContent);
-  if(hash(`${job.projectKey}\n${job.documentVersion}\n${job.markdownContent}`)!==job.contentHash)throw Error('report_local_invalid');
+  const sourceMarkdown=job.sourceMarkdownContent??job.markdownContent;
+  if(hash(`${job.projectKey}\n${job.documentVersion}\n${sourceMarkdown}`)!==job.contentHash)throw Error('report_local_invalid');
   fs.mkdirSync(root,{recursive:true});
   if(fs.existsSync(sourcePath)){const stat=fs.lstatSync(sourcePath);if(!stat.isFile()||stat.isSymbolicLink()||stat.size!==bytes.length||!fs.readFileSync(sourcePath).equals(bytes))throw Error('report_local_invalid');}
   else fs.writeFileSync(sourcePath,bytes,{flag:'wx'});
@@ -87,7 +89,7 @@ function createReportArchive({store,config,preread,client,assertOwnership=()=>{}
    let id=key('report-archive',target(),identity(p),pub.contentHash),job=store.get(PREFIX+id);
    if(!job){const matches=prior.filter(j=>j.reportVersion===reportVersion&&j.contentHash===pub.contentHash);if(matches.length>1){bind(p,null);store.set('report-archive-check:'+p.id,{nextAt:clock()+60000,error:'report_archive_ambiguous'});return;}if(matches.length===1){job=matches[0];id=job.id;}}
    if(p.input.reportArchive?.id!==id)bind(p,null);
-   if(!job){job={id,projectId:p.id,taskId:p.taskId,reportId:p.input.handoff.snapshot.reportId,reportVersion,checksum:p.checksum,documentVersion:pub.documentVersion,projectKey:pub.projectKey,contentHash:pub.contentHash,markdownContent:pub.markdownContent,title:pub.title.slice(0,60)+' — 预读报告 v'+pub.documentVersion+' '+reportVersion+' '+pub.contentHash.slice(0,8),target:target(),folderToken:options.folderToken,chatId:config.chatId,stage:'queued',createdAt:clock()};save(job);}
+   if(!job){job={id,projectId:p.id,taskId:p.taskId,reportId:p.input.handoff.snapshot.reportId,reportVersion,checksum:p.checksum,documentVersion:pub.documentVersion,projectKey:pub.projectKey,contentHash:pub.contentHash,sourceMarkdownContent:pub.markdownContent,markdownContent:composeDecisionReport(p,pub.markdownContent,{now:clock()}),formatVersion:'decision-brief-v1',title:pub.title.slice(0,60)+' — 预读报告 v'+pub.documentVersion+' '+reportVersion+' '+pub.contentHash.slice(0,8),target:target(),folderToken:options.folderToken,chatId:config.chatId,stage:'queued',createdAt:clock()};save(job);}
    if(job.target!==target())return;
    const drive=client??createDriveArchiveClient(options);
    if(job.stage==='published'){bind(p,job);return;}
