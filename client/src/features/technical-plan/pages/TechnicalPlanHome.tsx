@@ -112,6 +112,7 @@ const resetState = {
   contentGenerationPlans: {},
   contentIllustrationPlan: undefined,
   contentGenerationRuntime: undefined,
+  textModelSelection: undefined,
   bidTemplateExists: false,
   outlineData: null,
 };
@@ -1077,6 +1078,10 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
     setState((prev) => ({ ...prev, ...(saved || {}), contentGenerationOptions }));
   };
 
+  const handleTextModelSelectionChange = useCallback((textModelSelection: NonNullable<TechnicalPlanState['textModelSelection']>) => {
+    setState((prev) => ({ ...prev, textModelSelection }));
+  }, [setState]);
+
   const saveGlobalFacts = async (globalFacts: GlobalFactGroupState[]) => {
     const saved = await window.yibiao?.technicalPlan.saveGlobalFacts(globalFacts);
     setState((prev) => ({ ...prev, ...(saved || {}), globalFacts }));
@@ -1303,6 +1308,8 @@ function TechnicalPlanHome({ workflowKind, registerLeaveGuard, onSectionChange }
           tenderMarkdown={tenderMarkdown}
           originalPlanFile={state.originalPlanFile}
           originalPlanMarkdown={originalPlanMarkdown}
+          textModelSelection={state.textModelSelection}
+          onTextModelSelectionChange={handleTextModelSelectionChange}
           onFileImported={(nextState, markdown) => {
             setState((prev) => ({ ...prev, ...nextState }));
             setTenderMarkdown(markdown);

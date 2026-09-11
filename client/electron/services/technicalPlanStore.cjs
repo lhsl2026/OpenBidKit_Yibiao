@@ -72,6 +72,7 @@ const initialState = {
   contentGenerationPlans: {},
   contentIllustrationPlan: undefined,
   contentGenerationRuntime: undefined,
+  textModelSelection: undefined,
   bidTemplateExists: false,
   outlineData: null,
 };
@@ -168,6 +169,15 @@ function normalizeWorkflowKind(value) {
 function normalizeNonNegativeInteger(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+}
+
+function normalizeTextModelSelection(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const provider = String(value.provider || '').trim();
+  const modelName = String(value.modelName || value.model_name || '').trim();
+  if (!provider || !modelName) return undefined;
+  const label = String(value.label || `${provider} · ${modelName}`).trim();
+  return { provider, modelName, label };
 }
 
 // 统一 Step03 当前设置和目录快照的字段语义。
@@ -1884,6 +1894,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     }
     if (hasOwn(partial, 'contentGenerationOptions')) metaUpdates.content_generation_options_json = jsonOrNull(partial.contentGenerationOptions);
     if (!invalidatesContentGeneration && hasOwn(partial, 'contentGenerationRuntime')) metaUpdates.content_generation_runtime_json = jsonOrNull(partial.contentGenerationRuntime);
+    if (hasOwn(partial, 'textModelSelection')) metaUpdates.text_model_selection_json = jsonOrNull(normalizeTextModelSelection(partial.textModelSelection));
 
     if (Object.keys(metaUpdates).length) updateMeta(metaUpdates);
 
@@ -1995,6 +2006,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       globalFacts: loadGlobalFacts(),
       contentGenerationOptions: safeJsonParse(meta.content_generation_options_json, undefined),
       contentGenerationRuntime: safeJsonParse(meta.content_generation_runtime_json, undefined),
+      textModelSelection: normalizeTextModelSelection(safeJsonParse(meta.text_model_selection_json, undefined)),
       contentIllustrationPlan: loadContentIllustrationPlan(),
       bidTemplateExists: fs.existsSync(bidTemplatePath) && fs.existsSync(bidTemplateFieldsPath),
       contentGenerationSections: loadContentSections(outlineData),
@@ -2208,6 +2220,13 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     const normalized = normalizeGlobalFactsMode(globalFactsMode);
     updateTechnicalPlan({ globalFactsMode: normalized });
     return { globalFactsMode: normalized };
+  }
+
+  function saveTextModelSelection(selection) {
+    const textModelSelection = normalizeTextModelSelection(selection);
+    if (!textModelSelection) throw new Error('请选择可用的文本模型');
+    updateTechnicalPlan({ textModelSelection });
+    return { textModelSelection };
   }
 
   function saveGlobalFacts(globalFacts) {
@@ -2617,6 +2636,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     saveOutlineSelection,
     saveOutline,
     saveGlobalFactsConfig,
+    saveTextModelSelection,
     saveGlobalFacts,
     saveIllustrationHtml,
     saveIllustrationPng,

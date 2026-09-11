@@ -377,6 +377,7 @@ export interface TechnicalPlanState {
   contentGenerationPlans: ContentGenerationPlans;
   contentIllustrationPlan?: ContentIllustrationPlanState;
   contentGenerationRuntime?: ContentGenerationRuntimeState;
+  textModelSelection?: import('../../shared/types').TextModelSelection;
   bidTemplateExists?: boolean;
   outlineData: OutlineData | null;
 }

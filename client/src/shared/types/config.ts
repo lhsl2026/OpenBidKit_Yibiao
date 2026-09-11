@@ -16,6 +16,18 @@ export interface TextModelConfig {
   request_mode: AiRequestMode;
 }
 
+export interface TextModelSelection {
+  provider: string;
+  modelName: string;
+  label: string;
+}
+
+export interface SelectableTextModel extends TextModelSelection {
+  id: string;
+  source: 'codex' | 'configured';
+  recommended: boolean;
+}
+
 export type TextModelProfiles = Record<TextModelProvider, TextModelConfig> & Partial<Record<LegacyTextModelProvider, TextModelConfig>>;
 
 export interface AiConfig extends TextModelConfig {

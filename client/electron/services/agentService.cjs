@@ -669,6 +669,7 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
   function bindTaskContext(userTaskContextProvider, options = {}) {
     const queueScopeId = safeText(options.queueScopeId || options.queue_scope_id);
     const signal = options.signal;
+    const textModelSelection = options.textModelSelection;
     const primarySessionRequested = options.primary_session === true;
     return {
       runTask: (payload = {}) => {
@@ -678,6 +679,7 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
         return startTask({
           ...payload,
           ...(queueScopeId && !payload.queueScopeId && !payload.queue_scope_id ? { queue_scope_id: queueScopeId } : {}),
+          ...(textModelSelection && !payload.textModelSelection && !payload.text_model_selection ? { text_model_selection: textModelSelection } : {}),
           ...((payload.primary_session === true || primarySessionRequested) ? { primary_session: true } : {}),
           ...(taskSignal ? { signal: taskSignal } : {}),
         }, userTaskContextProvider);

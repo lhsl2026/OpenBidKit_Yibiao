@@ -32,6 +32,7 @@ const JINLONG_DEPRECATED_MODEL_MAP = {
   'gpt-5.6-luna': 'gpt-5.6-terra',
 };
 const IMAGE_MODEL_TEST_TIMEOUT_MESSAGE = '生图模型测试超时，请检查 Base URL、API Key 或模型名称';
+const { listSelectableTextModels, resolveTextModelConfig } = require('./textModelSelection.cjs');
 const ANALYTICS_ENDPOINT = 'https://analytics.agnet.top/track';
 const ANALYTICS_PROJECT_NAME = 'yibiao-client';
 const MODEL_INFO_ENDPOINT = 'https://analytics.agnet.top/model-info';
@@ -2308,21 +2309,40 @@ function createAiService({ app, configStore }) {
     return imageRequestQueue.enqueue(runner, { scopeId: getQueueScopeId(request), signal: request?.signal });
   }
 
+  function getTextConfig(request) {
+    return resolveTextModelConfig(configStore.load(), request?.textModelSelection);
+  }
+
+  function withTextModel(request, selection) {
+    if (!selection?.provider || !selection?.modelName || !request || typeof request !== 'object') return request;
+    return {
+      ...request,
+      textModelSelection: request.textModelSelection || {
+        provider: String(selection.provider),
+        modelName: String(selection.modelName),
+      },
+    };
+  }
+
   const service = {
     getConfig() {
       return configStore.load();
     },
 
+    listSelectableTextModels() {
+      return listSelectableTextModels(configStore.load());
+    },
+
     async chat(request) {
       return enqueueTextRequest(request, () => {
-        const config = configStore.load();
+        const config = getTextConfig(request);
         return chatWithConfig(app, config, request);
       }, { signal: request?.signal });
     },
 
     async runAgentChatCompletion(request) {
       return enqueueTextRequest(request, () => {
-        const config = configStore.load();
+        const config = getTextConfig(request);
         return runAgentChatCompletionWithConfig(app, config, request);
       }, {
         signal: request?.signal,
@@ -2333,21 +2353,21 @@ function createAiService({ app, configStore }) {
 
     async requestJson(request) {
       return enqueueTextRequest(request, () => {
-        const config = configStore.load();
+        const config = getTextConfig(request);
         return collectJsonResponseWithConfig(app, config, request);
       }, { signal: request?.signal });
     },
 
     async collectJsonResponse(request) {
       return enqueueTextRequest(request, () => {
-        const config = configStore.load();
+        const config = getTextConfig(request);
         return collectJsonResponseWithConfig(app, config, request);
       }, { signal: request?.signal });
     },
 
     async parseJsonResponseContent(request, content) {
       return enqueueTextRequest(request, () => {
-        const config = configStore.load();
+        const config = getTextConfig(request);
         return parseOrRepairJsonResponseWithConfig(app, config, request, content);
       }, { signal: request?.signal });
     },
@@ -2401,6 +2421,59 @@ function createAiService({ app, configStore }) {
         },
         generateImage(request) {
           return service.generateImage(withQueueScope(request, scopeId, signal));
+        },
+      };
+    },
+
+    withTextModel(selection) {
+      return {
+        ...service,
+        getConfig() {
+          return resolveTextModelConfig(configStore.load(), selection);
+        },
+        chat(request) {
+          return service.chat(withTextModel(request, selection));
+        },
+        requestJson(request) {
+          return service.requestJson(withTextModel(request, selection));
+        },
+        collectJsonResponse(request) {
+          return service.collectJsonResponse(withTextModel(request, selection));
+        },
+        parseJsonResponseContent(request, content) {
+          return service.parseJsonResponseContent(withTextModel(request, selection), content);
+        },
+        runAgentChatCompletion(request) {
+          return service.runAgentChatCompletion(withTextModel(request, selection));
+        },
+      };
+    },
+
+    withRequestContext({ queueScopeId, signal, textModelSelection } = {}) {
+      const bindRequest = (request) => withTextModel(withQueueScope(request, queueScopeId, signal), textModelSelection);
+      return {
+        ...service,
+        bindRequest,
+        getConfig() {
+          return resolveTextModelConfig(configStore.load(), textModelSelection);
+        },
+        chat(request) {
+          return service.chat(bindRequest(request));
+        },
+        requestJson(request) {
+          return service.requestJson(bindRequest(request));
+        },
+        collectJsonResponse(request) {
+          return service.collectJsonResponse(bindRequest(request));
+        },
+        parseJsonResponseContent(request, content) {
+          return service.parseJsonResponseContent(bindRequest(request), content);
+        },
+        runAgentChatCompletion(request) {
+          return service.runAgentChatCompletion(bindRequest(request));
+        },
+        generateImage(request) {
+          return service.generateImage(withQueueScope(request, queueScopeId, signal));
         },
       };
     },

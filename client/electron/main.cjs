@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { registerIpcHandlers } = require('./ipc/index.cjs');
+const { findYibiaoDeepLink, parseYibiaoDeepLink } = require('./services/deepLink.cjs');
 const { setupAutoUpdate, checkAndDownloadUpdate, triggerUpdateDownload, quitAndInstall, getLatestVersion, getUpdateDownloadUrl } = require('./services/updateService.cjs');
 const { getConfigFilePath, getGeneratedImagesDir, getGpuStartupProbePath, getImportedImagesDir } = require('./utils/paths.cjs');
 
@@ -18,6 +19,57 @@ let developerAgentMonitorWindow = null;
 let services = null;
 let closeBeforeQuitStarted = false;
 let quitAfterClose = false;
+let primaryMainWindow = null;
+let pendingDeepLink = findYibiaoDeepLink(process.argv);
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
+function registerYibiaoProtocolClient() {
+  if (process.defaultApp && process.argv[1]) {
+    return app.setAsDefaultProtocolClient('yibiao', process.execPath, [path.resolve(process.argv[1])]);
+  }
+  return app.setAsDefaultProtocolClient('yibiao');
+}
+
+function focusMainWindow() {
+  const mainWindow = primaryMainWindow;
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return mainWindow;
+}
+
+function deliverPendingDeepLink() {
+  const mainWindow = focusMainWindow();
+  if (!mainWindow || !pendingDeepLink || mainWindow.webContents.isLoading()) return;
+  const intent = pendingDeepLink;
+  pendingDeepLink = null;
+  mainWindow.webContents.send('app:deep-link', intent);
+}
+
+function acceptDeepLink(value) {
+  const intent = typeof value === 'string' ? parseYibiaoDeepLink(value) : value;
+  if (!intent) return false;
+  pendingDeepLink = intent;
+  deliverPendingDeepLink();
+  return true;
+}
+
+if (hasSingleInstanceLock) {
+  app.on('second-instance', (_event, commandLine) => {
+    const intent = findYibiaoDeepLink(commandLine);
+    if (intent) acceptDeepLink(intent);
+    else focusMainWindow();
+  });
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    acceptDeepLink(url);
+  });
+}
 
 function hasProcessArg(name) {
   return process.argv.some((arg) => arg === name || arg.startsWith(`${name}=`));
@@ -232,12 +284,23 @@ async function relaunchWithGpuDisabled() {
   app.exit(0);
 }
 
-const gpuStartupState = configureGpuHardwareAcceleration();
+const gpuStartupState = hasSingleInstanceLock
+  ? configureGpuHardwareAcceleration()
+  : {
+      autoDisabledByPreviousFailure: false,
+      configured: true,
+      forcedDisabled: false,
+      hardwareAccelerationEnabled: false,
+      probeStarted: false,
+      trial: false,
+    };
 
-protocol.registerSchemesAsPrivileged([{
-  scheme: 'yibiao-asset',
-  privileges: { standard: true, secure: true, supportFetchAPI: true },
-}]);
+if (hasSingleInstanceLock) {
+  protocol.registerSchemesAsPrivileged([{
+    scheme: 'yibiao-asset',
+    privileges: { standard: true, secure: true, supportFetchAPI: true },
+  }]);
+}
 
 function registerAssetProtocol() {
   protocol.handle('yibiao-asset', (request) => {
@@ -464,10 +527,13 @@ function openDeveloperAgentMonitorWindow() {
   return { success: true };
 }
 
-app.whenReady().then(() => {
+if (hasSingleInstanceLock) app.whenReady().then(() => {
   nativeTheme.themeSource = 'light';
+  registerYibiaoProtocolClient();
   registerAssetProtocol();
   const mainWindow = createMainWindow();
+  primaryMainWindow = mainWindow;
+  mainWindow.webContents.on('did-finish-load', deliverPendingDeepLink);
   scheduleGpuStartupProbeClear(mainWindow);
   services = registerIpcHandlers({
     app,
@@ -487,18 +553,21 @@ app.whenReady().then(() => {
   });
   setupAutoUpdate({ app, mainWindow });
   mainWindow.on('closed', () => {
+    if (primaryMainWindow === mainWindow) primaryMainWindow = null;
     closeDeveloperTokenStatsWindow();
     closeDeveloperAgentMonitorWindow();
   });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow();
+      const activatedWindow = createMainWindow();
+      primaryMainWindow = activatedWindow;
+      activatedWindow.webContents.on('did-finish-load', deliverPendingDeepLink);
     }
   });
 });
 
-app.on('child-process-gone', (_event, details) => {
+if (hasSingleInstanceLock) app.on('child-process-gone', (_event, details) => {
   if (details?.type !== 'GPU') return;
   if (appQuitting) return;
   console.warn('[gpu] GPU 子进程异常退出', {
@@ -514,7 +583,7 @@ app.on('child-process-gone', (_event, details) => {
   }
 });
 
-app.on('before-quit', (event) => {
+if (hasSingleInstanceLock) app.on('before-quit', (event) => {
   if (quitAfterClose) {
     return;
   }
@@ -540,7 +609,7 @@ app.on('before-quit', (event) => {
     });
 });
 
-app.on('window-all-closed', () => {
+if (hasSingleInstanceLock) app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }

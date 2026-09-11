@@ -29,6 +29,14 @@
     "directories": {
       "output": "release"
     },
+    "protocols": [
+      {
+        "name": "易标新建标书",
+        "schemes": [
+          "yibiao"
+        ]
+      }
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",

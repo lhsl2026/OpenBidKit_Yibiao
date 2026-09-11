@@ -41,6 +41,60 @@
   grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
+.task-model-selector {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(260px, 360px);
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(33, 116, 253, 0.2);
+  border-radius: var(--yb-radius-lg);
+  background: linear-gradient(135deg, rgba(33, 116, 253, 0.08), rgba(124, 58, 237, 0.05));
+}
+
+.task-model-selector-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.task-model-selector-copy strong {
+  color: var(--yb-text);
+  font-size: 14px;
+}
+
+.task-model-selector-copy span,
+.task-model-selector-empty {
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.task-model-selector select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 38px 0 12px;
+  color: var(--yb-text);
+  border: 1px solid var(--yb-border);
+  border-radius: var(--yb-radius-md);
+  outline: none;
+  background: #fff;
+}
+
+.task-model-selector select:focus {
+  border-color: rgba(33, 116, 253, 0.5);
+  box-shadow: var(--yb-focus-ring);
+}
+
+.task-model-selector-empty {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .task-model-selector {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* [1777-2081] analysis-import-card/result-card/markdown-card + technical-document-upload-board/reader + document-switch-tabs */
 .analysis-import-card,
 .analysis-result-card,

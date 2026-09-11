@@ -3,7 +3,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 23;
+const schemaVersion = 24;
 
 function createInitialSchema(db) {
   db.exec(`
@@ -48,6 +48,7 @@ function createInitialSchema(db) {
       outline_project_overview TEXT,
       content_generation_options_json TEXT,
       content_generation_runtime_json TEXT,
+      text_model_selection_json TEXT,
       selected_section_id TEXT,
       selected_section_title TEXT,
       selected_section_head_line TEXT,
@@ -229,6 +230,10 @@ function addTechnicalPlanOutlineExpansionMode(db) {
 
 function addTechnicalPlanGlobalFactsMode(db) {
   addColumnIfMissing(db, 'technical_plan_meta', 'global_facts_mode', "TEXT NOT NULL DEFAULT 'fabricate'");
+}
+
+function addTechnicalPlanTextModelSelection(db) {
+  addColumnIfMissing(db, 'technical_plan_meta', 'text_model_selection_json', 'TEXT');
 }
 
 function addTechnicalPlanBidSectionOptimization(db) {
@@ -1281,6 +1286,13 @@ const schemaHealthColumnGroups = [
       content_mode_note: 'TEXT',
     },
   },
+  {
+    version: 24,
+    table: 'technical_plan_meta',
+    columns: {
+      text_model_selection_json: 'TEXT',
+    },
+  },
 ];
 
 function quoteIdentifier(value) {
@@ -1459,6 +1471,11 @@ const migrations = [
     version: 23,
     description: '新增可行性研究报告工作区表结构',
     up: createFeasibilityReportSchema,
+  },
+  {
+    version: 24,
+    description: '技术方案新增任务级文本模型选择',
+    up: addTechnicalPlanTextModelSelection,
   },
 ];
 

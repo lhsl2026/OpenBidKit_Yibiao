@@ -48,8 +48,10 @@ export type {
   ModelInfoResult,
   ModelListResult,
   TextModelConfig,
+  TextModelSelection,
   TextModelProvider,
   TextModelProfiles,
+  SelectableTextModel,
   UpdateChannel,
 } from './config';
 export type { AppMenuItem, SectionId } from './navigation';

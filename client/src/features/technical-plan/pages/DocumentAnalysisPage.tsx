@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { isLibreOfficeRequiredMessage, MarkdownFullscreenViewer, MarkdownRenderer, UploadBoard, UploadEmpty, UploadFilePill, UploadRow, useDocumentParseNotice, useToast } from '../../../shared/ui';
-import type { FileParserProvider } from '../../../shared/types';
+import type { FileParserProvider, SelectableTextModel, TextModelSelection } from '../../../shared/types';
 import type { TechnicalPlanOriginalPlanFile, TechnicalPlanState, TechnicalPlanTenderFile, TechnicalPlanTenderSourceFile, TechnicalPlanWorkflowKind } from '../types';
 
 type TechnicalPlanUploadBusy = 'tender' | 'originalPlan' | null;
@@ -42,6 +42,8 @@ interface DocumentAnalysisPageProps {
   tenderMarkdown: string;
   originalPlanFile: TechnicalPlanOriginalPlanFile | null;
   originalPlanMarkdown: string;
+  textModelSelection?: TextModelSelection;
+  onTextModelSelectionChange: (selection: TextModelSelection) => void;
   onFileImported: (state: TechnicalPlanState, markdown: string) => void;
   onOriginalPlanImported: (state: TechnicalPlanState, markdown: string) => void;
 }
@@ -53,6 +55,8 @@ function DocumentAnalysisPage({
   tenderMarkdown,
   originalPlanFile,
   originalPlanMarkdown,
+  textModelSelection,
+  onTextModelSelectionChange,
   onFileImported,
   onOriginalPlanImported,
 }: DocumentAnalysisPageProps) {
@@ -61,11 +65,54 @@ function DocumentAnalysisPage({
   const [activeDocumentTab, setActiveDocumentTab] = useState('tender');
   const [tenderSourceMarkdowns, setTenderSourceMarkdowns] = useState<Record<string, string>>({});
   const [loadingTenderSourceId, setLoadingTenderSourceId] = useState('');
+  const [selectableModels, setSelectableModels] = useState<SelectableTextModel[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelSaving, setModelSaving] = useState(false);
   const { showToast } = useToast();
   const { showDocumentParseNotice } = useDocumentParseNotice();
   const isExpansionWorkflow = workflowKind === 'existing-plan-expansion';
   const isBusy = busy !== null;
   const firstTenderSourceId = tenderFiles[0]?.id || '';
+
+  useEffect(() => {
+    let mounted = true;
+    const loadModels = async () => {
+      try {
+        const models = await window.yibiao?.config.listSelectableTextModels();
+        if (!mounted) return;
+        const available = models || [];
+        setSelectableModels(available);
+        if (!textModelSelection && available.length) {
+          const preferred = available.find((model) => model.recommended) || available[0];
+          const saved = await window.yibiao?.technicalPlan.saveTextModelSelection(preferred);
+          if (mounted && saved?.textModelSelection) onTextModelSelectionChange(saved.textModelSelection);
+        }
+      } catch (error) {
+        if (mounted) showToast(error instanceof Error ? error.message : '读取可用模型失败', 'error');
+      } finally {
+        if (mounted) setModelsLoading(false);
+      }
+    };
+    void loadModels();
+    return () => { mounted = false; };
+  }, [onTextModelSelectionChange, showToast, textModelSelection]);
+
+  const selectTextModel = async (modelId: string) => {
+    const selected = selectableModels.find((model) => model.id === modelId);
+    if (!selected) return;
+    try {
+      setModelSaving(true);
+      const saved = await window.yibiao?.technicalPlan.saveTextModelSelection(selected);
+      if (saved?.textModelSelection) {
+        onTextModelSelectionChange(saved.textModelSelection);
+        showToast(`本标书将使用 ${saved.textModelSelection.label}`, 'success');
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '保存模型选择失败', 'error');
+    } finally {
+      setModelSaving(false);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -263,6 +310,26 @@ function DocumentAnalysisPage({
   return (
     <div className={`plan-step-body document-analysis-page technical-document-page${hasSectionHint ? ' has-section-hint' : ''}${hasDocumentTabs ? ' has-document-tabs' : ''}`}>
       <UploadBoard kicker="STEP 01" title="选择标书" subtitle={`默认解析方案：${configuredParserLabel}`}>
+        <section className="task-model-selector" aria-label="本标书使用模型">
+          <div className="task-model-selector-copy">
+            <strong>本标书使用模型</strong>
+            <span>选定后绑定到当前标书，生成过程中不会随全局设置切换。</span>
+          </div>
+          <select
+            value={textModelSelection ? `${textModelSelection.provider}:${textModelSelection.modelName}` : ''}
+            onChange={(event) => { void selectTextModel(event.target.value); }}
+            disabled={isBusy || modelsLoading || modelSaving || selectableModels.length === 0}
+            aria-label="选择文本模型"
+          >
+            {!textModelSelection && <option value="">{modelsLoading ? '正在读取模型...' : '请选择模型'}</option>}
+            {selectableModels.map((model) => (
+              <option key={model.id} value={model.id}>{model.label}{model.recommended ? '（推荐）' : ''}</option>
+            ))}
+          </select>
+          {!modelsLoading && selectableModels.length === 0 && (
+            <span className="task-model-selector-empty">没有可用模型，请先在左下角“设置”中完成模型配置。</span>
+          )}
+        </section>
         <UploadRow
           index="01"
           title="招标文件"

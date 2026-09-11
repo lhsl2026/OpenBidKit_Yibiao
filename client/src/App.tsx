@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AppRouter from './app/AppRouter';
 import GpuHardwareAccelerationPrompt from './app/GpuHardwareAccelerationPrompt';
 import LicenseStatusPrompt from './app/LicenseStatusPrompt';
@@ -44,7 +44,7 @@ function App() {
     }
   }, [activeSection, developerMode]);
 
-  const requestSectionChange = async (section: SectionId) => {
+  const requestSectionChange = useCallback(async (section: SectionId) => {
     if (section === activeSection) {
       return;
     }
@@ -52,7 +52,13 @@ function App() {
     if (allowed) {
       setActiveSection(section);
     }
-  };
+  }, [activeSection]);
+
+  useEffect(() => window.yibiao?.ui?.onDeepLink((intent) => {
+    if (intent.action === 'new-bid') {
+      void requestSectionChange('technical-plan');
+    }
+  }), [requestSectionChange]);
 
   return (
     <>

@@ -47,11 +47,17 @@ const bridge = {
   },
   ui: {
     setCurrentView: (view) => ipcRenderer.invoke('ui:set-current-view', view),
+    onDeepLink: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('app:deep-link', listener);
+      return () => ipcRenderer.removeListener('app:deep-link', listener);
+    },
   },
   config: {
     load: () => ipcRenderer.invoke('config:load'),
     save: (config) => ipcRenderer.invoke('config:save', config),
     listModels: (config) => ipcRenderer.invoke('config:list-models', config),
+    listSelectableTextModels: () => ipcRenderer.invoke('config:list-selectable-text-models'),
     getModelInfo: (modelName) => ipcRenderer.invoke('config:get-model-info', modelName),
     openConfigFolder: () => ipcRenderer.invoke('config:open-config-folder'),
   },
@@ -166,6 +172,7 @@ const bridge = {
     setWorkflowKind: (workflowKind) => ipcRenderer.invoke('technical-plan:set-workflow-kind', workflowKind),
     switchWorkflowKind: (workflowKind) => ipcRenderer.invoke('technical-plan:switch-workflow-kind', workflowKind),
     saveBidAnalysisConfig: (payload) => ipcRenderer.invoke('technical-plan:save-bid-analysis-config', payload),
+    saveTextModelSelection: (payload) => ipcRenderer.invoke('technical-plan:save-text-model-selection', payload),
     saveOutlineConfig: (payload) => ipcRenderer.invoke('technical-plan:save-outline-config', payload),
     saveOutlineSelection: (payload) => ipcRenderer.invoke('tasks:confirm-outline-selection', payload),
     saveOutline: (outlineData) => ipcRenderer.invoke('technical-plan:save-outline', outlineData),

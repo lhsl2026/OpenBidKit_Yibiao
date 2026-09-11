@@ -233,6 +233,7 @@ function createTechnicalPlanUserSettings(state = {}) {
     'outlineWordControlOptions',
     'outlineWordControlSnapshot',
     'referenceKnowledgeDocumentIds',
+    'textModelSelection',
     'contentGenerationOptions',
   ]);
   return settings;
@@ -873,13 +874,17 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
         : definition.stateKey === 'feasibilityReport'
           ? feasibilityReportStore
           : duplicateCheckStore;
-    const runnerAiService = aiService?.withQueueScope ? aiService.withQueueScope(queueScopeId, taskControl.signal) : aiService;
+    const textModelSelection = definition.stateKey === 'technicalPlan' ? previousState.textModelSelection : undefined;
+    const runnerAiService = aiService?.withRequestContext
+      ? aiService.withRequestContext({ queueScopeId, signal: taskControl.signal, textModelSelection })
+      : aiService?.withQueueScope ? aiService.withQueueScope(queueScopeId, taskControl.signal) : aiService;
     const agentTaskContextProvider = () => createAgentUserTaskContext(type, definition, payload, currentTask);
     const runnerAgentService = agentService.bindTaskContext(
       agentTaskContextProvider,
       {
         queueScopeId,
         signal: taskControl.signal,
+        textModelSelection,
         primary_session: startOptions.primarySession === true,
       },
     );
@@ -888,6 +893,7 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
       {
         queueScopeId,
         signal: taskControl.signal,
+        textModelSelection,
       },
     );
     runner({ aiService: runnerAiService, agentService: runnerAgentService, ordinaryAgentService: runnerOrdinaryAgentService, workspaceStore: runnerWorkspaceStore, knowledgeBaseService, openXmlHelperService, updateTask, checkpointTask, payload, taskControl, previousState }).catch((error) => {

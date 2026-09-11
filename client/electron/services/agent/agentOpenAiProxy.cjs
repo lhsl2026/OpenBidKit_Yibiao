@@ -950,6 +950,7 @@ async function requestAgentChatCompletion({ app, aiService, runtimeMeta, openAiB
         body: openAiBody,
         signal: timeout.signal,
         queueScopeId: activityContext?.queue_scope_id || '',
+        textModelSelection: activityContext?.text_model_selection,
         logTitle: runtimeMeta.displayName,
         onRequestStart(context) {
           stopQueueWaitingActivity();

@@ -1,7 +1,28 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');
-const {createLarkClient,deliverOutbox}=require('../lark.cjs');const {buildCard}=require('../card.cjs');
+const {createLarkClient,deliverOutbox}=require('../lark.cjs');const {buildCard,buildWritingPortalCard}=require('../card.cjs');
 const {createStore}=require('../store.cjs');
 test('card uses Card2 grouped layout, escaped text and versioned callbacks',()=>{const p={id:'p',version:'v1',companyId:'公司',input:{handoff:{task:{title:'<at id=all>恶意</at>'},requirements:[]},deadline:'2026-12-01'},assessment:{decision:'review',blockers:['缺证书'],actions:['补证书']},humanDecision:null};const c=buildCard(p);assert.equal(c.schema,'2.0');assert.ok(c.body.elements.some(e=>e.tag==='column_set'));assert.ok(!JSON.stringify(c.body).includes('<at'));assert.ok(JSON.stringify(c).includes('v1'));});
+test('decision card exposes a desktop Yibiao entry with a web fallback',()=>{
+ const p={id:'p',version:'v1',companyId:'公司',input:{handoff:{task:{title:'测试项目'},requirements:[]}},assessment:{decision:'review',blockers:[],actions:[]},humanDecision:null};
+ const card=buildCard(p);
+ const portal=card.body.elements.flatMap(element=>element.columns?.[0]?.elements||[]).find(element=>element.text?.content==='生成其他标书');
+ assert.deepEqual(portal.behaviors,[{type:'open_url',default_url:'https://yibiao.pro',pc_url:'yibiao://new-bid'}]);
+});
+test('standalone writing portal card supports bids that have no preread report',()=>{
+ const card=buildWritingPortalCard();
+ const text=JSON.stringify(card);
+ assert.equal(card.schema,'2.0');
+ assert.equal(card.config.width_mode,'default');
+ assert.match(text,/未进入预读报告/);
+ assert.match(text,/上传招标文件/);
+ assert.match(text,/选择本标书使用的模型/);
+ const buttons=card.body.elements.flatMap(element=>element.columns?.[0]?.elements||[element]).filter(element=>element.tag==='button');
+ assert.equal(buttons.length,1);
+ assert.equal(buttons[0].type,'primary_filled');
+ assert.equal(buttons[0].width,'fill');
+ assert.deepEqual(buttons[0].behaviors,[{type:'open_url',default_url:'https://yibiao.pro',pc_url:'yibiao://new-bid'}]);
+ assert.doesNotMatch(text,/"type":"callback"/);
+});
 test('decision card shows a one-screen bid brief instead of paginated source clauses',()=>{
  const requirements=[
   {id:'basic:budget',key:'基础信息：budget',category:'basic',value:'300万元',coordinate:'第2页'},
