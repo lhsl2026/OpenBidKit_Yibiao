@@ -28,6 +28,10 @@ function getTechnicalPlanDir(app) {
   return path.join(getWorkspaceDir(app), 'technical-plan');
 }
 
+function getBusinessBidDir(app) {
+  return path.join(getWorkspaceDir(app), 'business-bid');
+}
+
 function getFeasibilityReportDir(app) {
   return path.join(getWorkspaceDir(app), 'feasibility-report');
 }
@@ -217,6 +221,7 @@ module.exports = {
   getTechnicalPlanTenderMarkdownPath,
   getTechnicalPlanTenderOriginalsDir,
   getWorkspaceDir,
+  getBusinessBidDir,
   getWorkspaceDatabasePath,
   getUserDataPath,
 };

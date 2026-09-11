@@ -291,6 +291,7 @@ function paragraph(children, options = {}) {
   return new Paragraph({
     children: children?.length ? children : [textRun('')],
     heading: options.heading,
+    keepNext: options.keepNext,
     pageBreakBefore: options.pageBreakBefore,
     alignment: options.alignment,
     bullet: options.bullet,
@@ -1486,7 +1487,7 @@ async function htmlTableToDocx($, tableNode, context) {
       cells.push(createTableCell({
         children: [paragraph(
           await htmlInlineRuns($, $(cellNode).contents().toArray(), context, tableCellRunMarks(cellStyle)),
-          tableCellParagraphOptions(cellStyle),
+          { ...tableCellParagraphOptions(cellStyle), ...(context.keepTableRows && isHeader ? { keepNext: true } : {}) },
         )],
         context,
         isHeader,
@@ -1495,7 +1496,7 @@ async function htmlTableToDocx($, tableNode, context) {
         totalColumns: maxColumns,
       }));
     }
-    rows.push(new TableRow({ children: cells }));
+    rows.push(new TableRow({ children: cells, ...(context.keepTableRows ? { cantSplit: true, tableHeader: rowIndex === 0 } : {}) }));
   }
 
   if (!rows.length) {
@@ -1653,6 +1654,7 @@ async function htmlHeadingToDocxBlocks($, node, context) {
   const style = getHeadingStyle(context.exportFormat, mdLevel);
   const headingOpts = {
     heading: headingLevel(mdLevel),
+    ...(context.keepTableRows ? { keepNext: true } : {}),
     before: style ? style.spacing_before_pt * 20 : (mdLevel === 1 ? 280 : 180),
     after: style ? style.spacing_after_pt * 20 : 120,
     indent: { left: 0, right: 0, firstLine: 0, hanging: 0 },
@@ -2010,6 +2012,7 @@ function buildOutlineHeadingParagraph(item, context, level, options = {}) {
 
   const paraOptions = {
     heading: headingLevel(level),
+    ...(context.keepTableRows ? { keepNext: true } : {}),
     pageBreakBefore: level === 1 && isLevel1PageBreakEnabled(context.exportFormat) && !options.disablePageBreakBefore,
     alignment: style ? alignmentToWordType(style.alignment) : undefined,
     before: options.compact ? 0 : (style ? style.spacing_before_pt * 20 : (level === 1 ? 320 : 200)),
@@ -2254,6 +2257,7 @@ async function buildDocxResult(payload, options = {}) {
     developerLogger: options.developerLogger,
     exportFormat,
     feasibility: readFeasibilityExportContext(payload),
+    keepTableRows: payload.table_pagination === 'keep-rows',
   };
   writeExportLog(context, 'export.docx.build.started', {
     stats,

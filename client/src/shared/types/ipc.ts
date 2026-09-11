@@ -1,4 +1,5 @@
 import type { AiHttpErrorPayload, ChatCompletionRequest, JsonCompletionRequest } from './ai';
+import type { BusinessBidBridge, BusinessBidState } from '../../features/business-bid/types';
 import type { DuplicateCheckWorkspacePatch, DuplicateCheckWorkspaceState, FileSelectionResult } from './bid';
 import type { ClientConfig, ConfigSaveResult, ImageModelTestResult, ModelInfoResult, ModelListResult, SelectableTextModel, TextModelSelection, UpdateChannel } from './config';
 import type { KnowledgeAnalysisSnapshot, KnowledgeBaseEvent, KnowledgeBaseIndex, KnowledgeBaseIndexMutationResult, KnowledgeBaseMutationResult, KnowledgeBaseRetryDocumentResult, KnowledgeBaseStartMatchingResult, KnowledgeBaseUploadResult, KnowledgeDocument, KnowledgeFolder, KnowledgeItem } from '../../features/knowledge-base/types';
@@ -22,6 +23,7 @@ export interface TaskEventTask {
 }
 
 export interface TaskEvent<TState = unknown, TRejectionCheckState = unknown, TDuplicateCheckState = unknown> {
+  businessBidPatch?: Partial<BusinessBidState>;
   task: TaskEventTask;
   technicalPlan?: TState;
   technicalPlanPatch?: Partial<TechnicalPlanState>;
@@ -489,6 +491,7 @@ export interface AgentSelfCheckReportExportResult {
 }
 
 export interface YibiaoBridge {
+  businessBid: BusinessBidBridge;
   appName: string;
   platform: string;
   getVersion: () => Promise<string>;

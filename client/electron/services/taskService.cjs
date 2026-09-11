@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { runBusinessBidAnalysisTask } = require('./businessBidTask.cjs');
 const { runBidSectionExtractionTask } = require('./bidSectionExtractionTask.cjs');
 const { runBidAnalysisTask } = require('./bidAnalysisTask.cjs');
 const { runContentGenerationTask } = require('./contentGenerationTask.cjs');
@@ -26,6 +27,10 @@ const { runFeasibilityOutlineAdjustmentTask } = require('./feasibilityOutlineAdj
 const { normalizeLogs } = require('./taskLogStore.cjs');
 
 const taskDefinitions = {
+  'business-bid-analysis': {
+    label: '商务要求提取', group: 'business-bid', groupLabel: '商务标', step: 2,
+    lockPolicy: 'group-exclusive', stateKey: 'businessBid', field: 'analysisTask',
+  },
   'bid-section-extraction': {
     label: '多标段识别',
     group: 'technical-plan',
@@ -315,7 +320,7 @@ function createTask(type, payload) {
   };
 }
 
-function createTaskService({ aiService, agentService, autoConfirmationService, technicalPlanStore, rejectionCheckStore, duplicateCheckStore, feasibilityReportStore, knowledgeBaseService, duplicateCheckService, openXmlHelperService }) {
+function createTaskService({ aiService, agentService, autoConfirmationService, technicalPlanStore, rejectionCheckStore, duplicateCheckStore, feasibilityReportStore, businessBidStore, knowledgeBaseService, duplicateCheckService, openXmlHelperService }) {
   const subscribers = new Set();
   const callbackSubscribers = new Set();
   const activeTasks = new Map();
@@ -505,11 +510,13 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
     if (definition.stateKey === 'feasibilityReport') {
       return buildFeasibilityReportSnapshot(task, state, eventPatch);
     }
+    if (definition.stateKey === 'businessBid') return { businessBidPatch: state };
     return {};
   }
 
   function getSnapshotForTask(task) {
     const definition = getTaskDefinition(task.type);
+    if (definition.stateKey === 'businessBid') return { businessBidPatch: businessBidStore.loadBusinessBid() };
     if (definition.stateKey === 'technicalPlan') {
       return buildSnapshot(definition, technicalPlanStore.loadTechnicalPlan(), task);
     }
@@ -610,6 +617,10 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
   }
 
   function updateWorkspaceStateWithoutReload(definition, partial) {
+    if (definition.stateKey === 'businessBid') {
+      businessBidStore.updateBusinessBidWithoutReload(partial);
+      return;
+    }
     if (definition.stateKey === 'technicalPlan') {
       technicalPlanStore.updateTechnicalPlanWithoutReload(partial);
       return;
@@ -630,6 +641,7 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
   }
 
   function loadWorkspaceState(definition) {
+    if (definition.stateKey === 'businessBid') return businessBidStore.loadBusinessBid();
     if (definition.stateKey === 'technicalPlan') {
       return technicalPlanStore.loadTechnicalPlan();
     }
@@ -867,14 +879,14 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
       taskControl.waitForOutlineSelection();
     }
 
-    const runnerWorkspaceStore = definition.stateKey === 'technicalPlan'
+    const runnerWorkspaceStore = definition.stateKey === 'businessBid' ? businessBidStore : definition.stateKey === 'technicalPlan'
       ? technicalPlanStore
       : definition.stateKey === 'rejectionCheck'
         ? rejectionCheckStore
         : definition.stateKey === 'feasibilityReport'
           ? feasibilityReportStore
           : duplicateCheckStore;
-    const textModelSelection = definition.stateKey === 'technicalPlan' ? previousState.textModelSelection : undefined;
+    const textModelSelection = ['technicalPlan', 'businessBid'].includes(definition.stateKey) ? previousState.textModelSelection : undefined;
     const runnerAiService = aiService?.withRequestContext
       ? aiService.withRequestContext({ queueScopeId, signal: taskControl.signal, textModelSelection })
       : aiService?.withQueueScope ? aiService.withQueueScope(queueScopeId, taskControl.signal) : aiService;
@@ -1363,6 +1375,11 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
   }
 
   const technicalPlanRecoveryState = technicalPlanStore.loadTechnicalPlan() || {};
+  const interruptedBusinessTask = businessBidStore?.loadBusinessBid().analysisTask;
+  if (interruptedBusinessTask && isActiveTaskStatus(interruptedBusinessTask.status)) {
+    businessBidStore.updateBusinessBidWithoutReload({ analysisComplete: false, analysisConfirmed: false, draft: null,
+      analysisTask: { ...interruptedBusinessTask, status: 'error', error: '应用退出导致商务提取中断，请重新提取并复核', updated_at: now() } });
+  }
   const rejectionCheckRecoveryState = rejectionCheckStore.loadRejectionCheck() || {};
   const duplicateCheckRecoveryState = duplicateCheckStore.loadDuplicateCheck() || {};
   const feasibilityReportRecoveryState = feasibilityReportStore?.loadFeasibilityReport?.() || {};
@@ -1380,6 +1397,15 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
   return {
     subscribe,
     subscribeCallback,
+    startBusinessBidAnalysis() {
+      businessBidStore.assertIdle();
+      const state = businessBidStore.loadBusinessBid();
+      if (!state.files.length) throw new Error('请先上传招标文件');
+      return startManagedTask('business-bid-analysis', {}, runBusinessBidAnalysisTask, {
+        analysis: null, analysisComplete: false, analysisConfirmed: false, analysisCoverage: null,
+        draft: null, fieldValues: {}, evidence: state.evidence.map(item => ({ ...item, confirmed: false, requirementIds: [] })),
+      });
+    },
     startBidSectionExtraction(payload) {
       return startManagedTask('bid-section-extraction', payload, runBidSectionExtractionTask, {
         bidSectionMode: 'multiple',

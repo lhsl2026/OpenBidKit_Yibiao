@@ -1,6 +1,17 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const bridge = {
+  businessBid: {
+    load: () => ipcRenderer.invoke('business-bid:load'),
+    importDocuments: (paths) => ipcRenderer.invoke('business-bid:import', paths),
+    readSource: (id) => ipcRenderer.invoke('business-bid:source', id),
+    importEvidence: () => ipcRenderer.invoke('business-bid:import-evidence'),
+    saveReview: (payload) => ipcRenderer.invoke('business-bid:review', payload),
+    analyze: () => ipcRenderer.invoke('business-bid:analyze'),
+    generate: () => ipcRenderer.invoke('business-bid:generate'),
+    clear: () => ipcRenderer.invoke('business-bid:clear'),
+    export: (payload) => ipcRenderer.invoke('business-bid:export', payload),
+  },
   appName: '易标投标工具箱',
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('app:get-version'),

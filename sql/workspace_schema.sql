@@ -14,7 +14,7 @@ PRAGMA busy_timeout = 5000;
 
 -- 目标完整结构版本。
 -- 运行时代码应通过 PRAGMA user_version 判断是否需要自动升级。
-PRAGMA user_version = 23;
+PRAGMA user_version = 25;
 
 -- ============================================================================
 -- 技术方案 technical_plan_*（v1 已落地）
@@ -903,3 +903,9 @@ ON feasibility_report_outline_nodes(parent_node_id, sort_order);
 
 CREATE INDEX IF NOT EXISTS idx_feasibility_report_outline_level
 ON feasibility_report_outline_nodes(level);
+-- 商务标单工作区（runtime migration v25）
+CREATE TABLE IF NOT EXISTS business_bid_workspace (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  state_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

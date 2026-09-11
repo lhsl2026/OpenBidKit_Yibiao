@@ -3,7 +3,15 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 24;
+const schemaVersion = 25;
+
+function createBusinessBidSchema(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS business_bid_workspace (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );`);
+}
 
 function createInitialSchema(db) {
   db.exec(`
@@ -1041,6 +1049,7 @@ function createFeasibilityReportSchema(db) {
 }
 
 const schemaHealthTableGroups = [
+  { version: 25, tables: ['business_bid_workspace'], repair: createBusinessBidSchema },
   {
     version: 1,
     tables: [
@@ -1357,6 +1366,7 @@ function ensureWorkspaceSchemaHealth(db, targetVersion = schemaVersion, onStatus
 }
 
 const migrations = [
+  { version: 25, description: '新增商务标工作区', up: createBusinessBidSchema },
   {
     version: 1,
     description: '创建技术方案 SQLite 初始表结构',
