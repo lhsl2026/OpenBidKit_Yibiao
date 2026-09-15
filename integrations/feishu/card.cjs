@@ -4,7 +4,7 @@ const group=(elements,color='grey-50')=>({tag:'column_set',flex_mode:'none',back
 const label={follow:'建议跟进',review:'暂缓，待核实',reject:'不建议投标'};
 const human={follow:'已确认跟进',defer:'暂缓',decline:'不投'};
 const {buildDecisionBrief}=require('./decision-brief.cjs');
-const writingPortalBehavior=()=>({type:'open_url',default_url:'https://yibiao.pro',pc_url:'yibiao://new-bid'});
+const writingPortalBehavior=bidType=>({type:'open_url',default_url:'https://yibiao.pro',pc_url:`yibiao://new-bid${bidType?`?type=${bidType}`:''}`});
 const writingPortalButton=()=>({tag:'button',type:'default',text:{tag:'plain_text',content:'生成其他标书'},behaviors:[writingPortalBehavior()]});
 function baseCard(title,template,elements){return{schema:'2.0',config:{update_multi:true,width_mode:'default',enable_forward:false},header:{title:{tag:'plain_text',content:title.slice(0,120)},template},body:{direction:'vertical',vertical_spacing:'12px',padding:'12px',elements}};}
 function buildCard(p,writing,page=0,options={}){
@@ -43,9 +43,10 @@ function buildWritingPortalCard(){
     },
     body:{direction:'vertical',vertical_spacing:'12px',padding:'12px 12px 20px 12px',elements:[
       group([md('**没有预读报告，也可以直接生成标书**\n在易标中上传招标文件，按现有完整流程完成解析、目录、事实核对和正文生成。')],'green-50'),
-      group([md('**使用步骤**\n1. 点击下方按钮打开易标\n2. 上传招标文件\n3. 选择本标书使用的模型\n4. 核对待核实项后开始生成')],'grey-50'),
+      group([md('**使用步骤**\n1. 选择生成技术标或商务标\n2. 上传招标文件\n3. 选择本标书使用的模型\n4. 核对待核实项后开始生成')],'grey-50'),
       group([md('**生成规则**\n模型选择固定到当前标书任务；证据不足保留“待核实”。报价、签章和投标提交仍由员工确认。')],'green-50'),
-      {tag:'button',type:'primary_filled',width:'fill',text:{tag:'plain_text',content:'打开易标新建标书'},behaviors:[writingPortalBehavior()]},
+      {tag:'button',type:'primary_filled',width:'fill',text:{tag:'plain_text',content:'生成技术标'},behaviors:[writingPortalBehavior('technical')]},
+      {tag:'button',type:'primary_filled',width:'fill',text:{tag:'plain_text',content:'生成商务标'},behaviors:[writingPortalBehavior('business')]},
     ]},
   };
 }

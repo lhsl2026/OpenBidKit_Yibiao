@@ -1,4 +1,4 @@
-const { app, BrowserWindow, nativeTheme, shell, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, shell, protocol, net } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -21,6 +21,7 @@ let closeBeforeQuitStarted = false;
 let quitAfterClose = false;
 let primaryMainWindow = null;
 let pendingDeepLink = findYibiaoDeepLink(process.argv);
+let deepLinkRendererReady = false;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
@@ -45,7 +46,7 @@ function focusMainWindow() {
 
 function deliverPendingDeepLink() {
   const mainWindow = focusMainWindow();
-  if (!mainWindow || !pendingDeepLink || mainWindow.webContents.isLoading()) return;
+  if (!mainWindow || !pendingDeepLink || !deepLinkRendererReady || mainWindow.webContents.isLoading()) return;
   const intent = pendingDeepLink;
   pendingDeepLink = null;
   mainWindow.webContents.send('app:deep-link', intent);
@@ -60,6 +61,11 @@ function acceptDeepLink(value) {
 }
 
 if (hasSingleInstanceLock) {
+  ipcMain.on('app:deep-link-ready', (event) => {
+    if (!primaryMainWindow || event.sender.id !== primaryMainWindow.webContents.id) return;
+    deepLinkRendererReady = true;
+    deliverPendingDeepLink();
+  });
   app.on('second-instance', (_event, commandLine) => {
     const intent = findYibiaoDeepLink(commandLine);
     if (intent) acceptDeepLink(intent);
@@ -376,6 +382,7 @@ async function openExternalUrl(value) {
 }
 
 function createMainWindow() {
+  deepLinkRendererReady = false;
   const mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -394,6 +401,9 @@ function createMainWindow() {
   });
 
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.on('did-start-loading', () => {
+    if (primaryMainWindow === mainWindow) deepLinkRendererReady = false;
+  });
 
   if (rendererUrl) {
     mainWindow.loadURL(rendererUrl);
@@ -553,7 +563,10 @@ if (hasSingleInstanceLock) app.whenReady().then(() => {
   });
   setupAutoUpdate({ app, mainWindow });
   mainWindow.on('closed', () => {
-    if (primaryMainWindow === mainWindow) primaryMainWindow = null;
+    if (primaryMainWindow === mainWindow) {
+      primaryMainWindow = null;
+      deepLinkRendererReady = false;
+    }
     closeDeveloperTokenStatsWindow();
     closeDeveloperAgentMonitorWindow();
   });

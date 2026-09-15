@@ -518,7 +518,7 @@ export interface YibiaoBridge {
   };
   ui: {
     setCurrentView: (view: { section: string; step?: string | null }) => Promise<{ success: boolean }>;
-    onDeepLink: (callback: (intent: { action: 'new-bid'; url: string }) => void) => () => void;
+    onDeepLink: (callback: (intent: { action: 'new-bid'; section: 'bid-generation' | 'technical-plan' | 'business-bid'; url: string }) => void) => () => void;
   };
   config: {
     load: () => Promise<ClientConfig>;

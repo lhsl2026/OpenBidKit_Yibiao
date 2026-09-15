@@ -56,7 +56,7 @@ function App() {
 
   useEffect(() => window.yibiao?.ui?.onDeepLink((intent) => {
     if (intent.action === 'new-bid') {
-      void requestSectionChange('technical-plan');
+      void requestSectionChange(intent.section);
     }
   }), [requestSectionChange]);
 

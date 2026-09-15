@@ -103,7 +103,7 @@ Content-Type: application/octet-stream
 
 ## 其他标书入口和任务模型
 
-项目判标卡包含“生成其他标书”，正式群可另发 `buildWritingPortalCard()` 生成的长期入口卡。两种入口使用 Card 2.0 `open_url`：Windows 飞书优先打开 `yibiao://new-bid`，手机、Web 或未安装桌面端时回退到 `https://yibiao.pro`。按钮不发送 `card.action.trigger`，因此无需卡片回调才能打开。Electron 安装包声明 `yibiao` 协议；开发运行也会登记当前 Electron 入口。应用采用单实例，首次启动和运行中再次点击都会聚焦易标并切到技术标工作台。为避免误删未完成标书，深链接不会静默重置已有工作区。
+项目判标卡包含“生成其他标书”，正式群可另发 `buildWritingPortalCard()` 生成的长期入口卡。两种入口使用 Card 2.0 `open_url`：Windows 飞书优先打开本机 `yibiao` 协议，手机、Web 或未安装桌面端时回退到 `https://yibiao.pro`。长期入口分别提供 `yibiao://new-bid?type=technical` 和 `yibiao://new-bid?type=business`，直接进入技术标或商务标；存量 `yibiao://new-bid` 链接打开“标书生成”选择页。按钮不发送 `card.action.trigger`，因此无需卡片回调才能打开。Electron 安装包声明 `yibiao` 协议；开发运行也会登记当前 Electron 入口。应用采用单实例，首次启动和运行中再次点击都会聚焦易标。为避免误删未完成标书，深链接不会静默重置已有工作区。
 
 “选择标书”页显示所有配置完整的文本模型。指向本机回环 Codex 桥且模型名为 `gpt-*` 的配置显示为“Codex”并排第一；当前接入默认为 `gpt-6-astra`。DeepSeek 与其他已配置 provider 同时可选。所选 provider、模型名和显示标签保存在当前技术标工作区，普通 AI 请求和 Pi Agent 代理都使用该选择；生成期间即使全局活动模型改变，当前任务仍使用自己的模型名。连接地址与密钥仍从对应 provider 的本机配置读取，不写入工作区或飞书。
 

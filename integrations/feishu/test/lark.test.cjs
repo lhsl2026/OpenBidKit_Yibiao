@@ -17,10 +17,13 @@ test('standalone writing portal card supports bids that have no preread report',
  assert.match(text,/上传招标文件/);
  assert.match(text,/选择本标书使用的模型/);
  const buttons=card.body.elements.flatMap(element=>element.columns?.[0]?.elements||[element]).filter(element=>element.tag==='button');
- assert.equal(buttons.length,1);
- assert.equal(buttons[0].type,'primary_filled');
- assert.equal(buttons[0].width,'fill');
- assert.deepEqual(buttons[0].behaviors,[{type:'open_url',default_url:'https://yibiao.pro',pc_url:'yibiao://new-bid'}]);
+ assert.equal(buttons.length,2);
+ assert.deepEqual(buttons.map(button=>button.text.content),['生成技术标','生成商务标']);
+ assert.ok(buttons.every(button=>button.type==='primary_filled'&&button.width==='fill'));
+ assert.deepEqual(buttons.map(button=>button.behaviors),[
+  [{type:'open_url',default_url:'https://yibiao.pro',pc_url:'yibiao://new-bid?type=technical'}],
+  [{type:'open_url',default_url:'https://yibiao.pro',pc_url:'yibiao://new-bid?type=business'}],
+ ]);
  assert.doesNotMatch(text,/"type":"callback"/);
 });
 test('decision card shows a one-screen bid brief instead of paginated source clauses',()=>{

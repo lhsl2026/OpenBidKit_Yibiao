@@ -63,6 +63,7 @@ const bridge = {
     onDeepLink: (callback) => {
       const listener = (_event, payload) => callback(payload);
       ipcRenderer.on('app:deep-link', listener);
+      ipcRenderer.send('app:deep-link-ready');
       return () => ipcRenderer.removeListener('app:deep-link', listener);
     },
   },
