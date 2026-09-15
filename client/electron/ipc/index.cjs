@@ -114,6 +114,7 @@ function sendToWebContents(webContents, channel, payload) {
 const workspaceDatabaseChannels = [
   'business-bid:load', 'business-bid:import', 'business-bid:source', 'business-bid:import-evidence',
   'business-bid:review', 'business-bid:analyze', 'business-bid:generate', 'business-bid:clear', 'business-bid:export',
+  'business-bid:import-template', 'business-bid:clear-template',
   'technical-plan:load-state',
   'technical-plan:import-tender-document',
   'technical-plan:remove-tender-document',

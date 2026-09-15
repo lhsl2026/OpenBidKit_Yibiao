@@ -1401,6 +1401,8 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
       businessBidStore.assertIdle();
       const state = businessBidStore.loadBusinessBid();
       if (!state.files.length) throw new Error('请先上传招标文件');
+      // 在清空已核对结果前检查所有原文，避免缺失或损坏的文件让重提取破坏已有工作。
+      for (const file of state.files) businessBidStore.readSource(file.id);
       return startManagedTask('business-bid-analysis', {}, runBusinessBidAnalysisTask, {
         analysis: null, analysisComplete: false, analysisConfirmed: false, analysisCoverage: null,
         draft: null, fieldValues: {}, evidence: state.evidence.map(item => ({ ...item, confirmed: false, requirementIds: [] })),

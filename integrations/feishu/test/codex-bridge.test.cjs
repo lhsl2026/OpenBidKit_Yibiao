@@ -43,6 +43,31 @@ test('strict schema rejects tools, images, unknown model and malformed requests 
   assert.equal(valid.status, 200);
 });
 
+test('selectable models reach the executor, remain separate in cache and identify SSE responses', async t => {
+  const selected = [];
+  const f = await fixture(t, {
+    config: { models: ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra'], recommendedModel: 'gpt-5.6-terra' },
+    run: async ({ model }) => { selected.push(model); return `answer from ${model}`; },
+  });
+  const models = await (await fetch(f.url + '/v1/models', { headers: { authorization: 'Bearer ' + apiKey } })).json();
+  assert.deepEqual(models.data.map(m => m.id), ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra']);
+  assert.deepEqual(models.data.filter(m => m.recommended).map(m => m.id), ['gpt-5.6-terra']);
+  for (const model of ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra']) {
+    const response = await f.post(payload('same input', { model }));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.model, model);
+    assert.equal(body.choices[0].message.content, `answer from ${model}`);
+  }
+  const stream = await f.post(payload('same input', { model: 'gpt-5.6-terra', stream: true }));
+  const chunks = (await stream.text()).split('\n\n').filter(s => s.startsWith('data: {')).map(s => JSON.parse(s.slice(6)));
+  assert.ok(chunks.length);
+  assert.ok(chunks.every(chunk => chunk.model === 'gpt-5.6-terra'));
+  assert.deepEqual(selected, ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra']);
+  assert.equal((await f.post(payload('same input', { model: 'not-enabled' }))).status, 400);
+  assert.equal(f.calls(), 3);
+});
+
 test('JSON and SSE share one cached completion and one request id', async t => {
   const f = await fixture(t);
   const normal = await (await f.post(payload())).json();

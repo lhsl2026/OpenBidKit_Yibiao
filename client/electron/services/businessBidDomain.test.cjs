@@ -45,6 +45,20 @@ test('analysis accepts only quotes present in this source and preserves provenan
   assert.throws(() => normalizeAnalysis({ ...emptyAnalysis, fields: [{ title: '凭空字段', quote: '没有的原文' }] }, source), /原文/);
 });
 
+test('PDF table HTML line breaks and ordinary quote line breaks describe the same source text', () => {
+  const source = { id: 'f1', name: '合成表格.pdf', segment: 1,
+    text: '| 要求 | 资格审查资料复印<br>件；须在15个工作日内<br />完成。 |\n| 付款 | 验收后付合同金额的100%。<BR>不扣取押金。 |' };
+  const quote = '资格审查资料复印\n件；须在15个工作日内\n完成。';
+  const result = normalizeAnalysis({ ...emptyAnalysis, qualifications: [{ title: '提供复印件并按期完成', quote }],
+    terms: [{ title: '付款', quote: '验收后付合同金额的100%。\n不扣取押金。' }] }, source);
+  assert.equal(result.qualifications[0].quote, quote);
+  assert.equal(result.terms.length, 1);
+  assert.equal(result.qualifications[0].sourceId, 'f1');
+  for (const badQuote of ['<br>', '资格审查资料原件', '须在14个工作日内完成。', '验收后付合同金额的90%。', '资格审查资料复印件；完成。']) {
+    assert.throws(() => normalizeAnalysis({ ...emptyAnalysis, terms: [{ title: '被修改的条款', quote: badQuote }] }, source), /原文/);
+  }
+});
+
 test('same field in different forms and segments is preserved', () => {
   const source = { id: 'f1', name: '合成.md', segment: 1, text: '投标人名称：' };
   const part = normalizeAnalysis({ ...emptyAnalysis, fields: [
@@ -57,6 +71,14 @@ test('same field in different forms and segments is preserved', () => {
 });
 test('malformed model shape is not accepted as empty complete extraction', () => {
   assert.throws(() => normalizeAnalysis({ unexpected: 'wrong' }, { text: '' }), /格式/);
+});
+
+test('malformed model items report their group and position without coercing values', () => {
+  const source = { id: 'f', name: '合成.md', segment: 2, text: '123 营业执照' };
+  for (const item of [null, [], '营业执照', { title: 123, quote: '123' },
+    { title: '营业执照', quote: ['营业执照'] }, { title: {}, quote: '营业执照' }]) {
+    assert.throws(() => normalizeAnalysis({ ...emptyAnalysis, qualifications: [item] }, source), /第 2 段.*qualifications.*第 1 项.*格式/);
+  }
 });
 test('SQLite integer permanent certificates remain eligible', (t) => {
   const { root, row } = fixture(t);
@@ -82,4 +104,29 @@ test('unconfirmed or ineligible evidence never enters the document as company ma
   const draft = buildDraft(state);
   assert.ok(!JSON.stringify(draft.sections).includes('不应采用的资质'));
   assert.ok(!JSON.stringify(draft.sections).includes('尚未选择的业绩'));
+});
+
+test('evidence ownership and employment are checked against the selected company', (t) => {
+  const { root, row } = fixture(t);
+  const selectedCompany = '合成乙公司（验收）';
+  const own = { ...row, id: 'other', companyId: selectedCompany };
+  const result = importEvidence({ records: [row, own] }, root, '2026-09-11', selectedCompany);
+  assert.equal(result.excluded, 1);
+  assert.equal(result.items[0].id, 'other');
+  assert.equal(result.items[0].eligible, true);
+  const personnel = { ...own, kind: 'certificate', permanent: true };
+  const snapshot = { records: [personnel], employmentEvidence: { [own.name]: { companyId, verified: true, attachments: own.attachments } } };
+  assert.equal(importEvidence(snapshot, root, '2026-09-11', selectedCompany).items[0].eligible, false);
+  snapshot.employmentEvidence[own.name].companyId = selectedCompany;
+  assert.equal(importEvidence(snapshot, root, '2026-09-11', selectedCompany).items[0].eligible, true);
+});
+
+test('draft uses the selected company in every company template and excludes foreign evidence', () => {
+  const companyName = '合成乙公司（验收）';
+  const state = { companyName, analysisConfirmed: true, analysis: emptyAnalysis, fieldValues: {},
+    evidence: [{ id: 'old', companyId, name: '甲方旧材料', eligible: true, confirmed: true }] };
+  const text = JSON.stringify(buildDraft(state));
+  assert.ok(text.includes(companyName));
+  assert.ok(!text.includes(companyId));
+  assert.ok(!text.includes('甲方旧材料'));
 });

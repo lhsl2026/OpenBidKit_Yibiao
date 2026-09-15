@@ -81,6 +81,14 @@ async function rejectsCode(promise, code) {
   });
 }
 
+test('request model changes CLI selection without changing the default for later runs', async t => {
+  const f = fixture(t, {}, [complete('terra'), complete('luna'), complete('default')]);
+  for (const model of ['gpt-5.6-terra', 'gpt-5.6-luna', undefined]) {
+    await f.executor.run({ model, messages: [{ role: 'user', content: 'synthetic' }] });
+  }
+  assert.deepEqual(f.calls.map(call => call.args[call.args.indexOf('--model') + 1]), ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra']);
+});
+
 test('runs the fixed read-only OpenAI HTTP Codex profile and returns schema-validated content', async (t) => {
   const messages = [
     { role: 'system', content: '只根据材料回答。' },

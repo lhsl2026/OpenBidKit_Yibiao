@@ -32,7 +32,7 @@ const JINLONG_DEPRECATED_MODEL_MAP = {
   'gpt-5.6-luna': 'gpt-5.6-terra',
 };
 const IMAGE_MODEL_TEST_TIMEOUT_MESSAGE = '生图模型测试超时，请检查 Base URL、API Key 或模型名称';
-const { listSelectableTextModels, resolveTextModelConfig } = require('./textModelSelection.cjs');
+const { discoverSelectableTextModels, resolveTextModelConfig } = require('./textModelSelection.cjs');
 const ANALYTICS_ENDPOINT = 'https://analytics.agnet.top/track';
 const ANALYTICS_PROJECT_NAME = 'yibiao-client';
 const MODEL_INFO_ENDPOINT = 'https://analytics.agnet.top/model-info';
@@ -746,7 +746,9 @@ async function collectJsonResponseWithConfig(app, config, request) {
 }
 
 function createChatRequestBody(config, request, options = {}) {
-  const modelName = JINLONG_DEPRECATED_MODEL_MAP[config.model_name] || config.model_name;
+  const modelName = config.text_model_provider === 'jinlong'
+    ? JINLONG_DEPRECATED_MODEL_MAP[config.model_name] || config.model_name
+    : config.model_name;
   const body = {
     model: modelName,
     messages: request.messages,
@@ -2330,7 +2332,7 @@ function createAiService({ app, configStore }) {
     },
 
     listSelectableTextModels() {
-      return listSelectableTextModels(configStore.load());
+      return discoverSelectableTextModels(configStore.load());
     },
 
     async chat(request) {
@@ -2566,7 +2568,7 @@ function createAiService({ app, configStore }) {
         success: true,
         message: '模型列表已更新',
         models: Array.isArray(data.data) 
-          ? data.data.map((item) => item.id).filter(Boolean).filter(id => !Object.keys(JINLONG_DEPRECATED_MODEL_MAP).includes(id))
+          ? data.data.map((item) => item.id).filter(Boolean).filter(id => config.text_model_provider !== 'jinlong' || !Object.keys(JINLONG_DEPRECATED_MODEL_MAP).includes(id))
           : [],
       };
     },

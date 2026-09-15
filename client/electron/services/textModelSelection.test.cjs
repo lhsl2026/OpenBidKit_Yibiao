@@ -3,8 +3,41 @@ const assert = require('node:assert/strict');
 
 const {
   listSelectableTextModels,
+  discoverSelectableTextModels,
   resolveTextModelConfig,
 } = require('./textModelSelection.cjs');
+
+test('dropdown discovers bridge choices and selects the recommendation without changing global config', async t => {
+  const { createServer } = require('node:http');
+  const server = createServer((req, res) => {
+    if (req.url !== '/v1/models' || req.headers.authorization !== 'Bearer local-bridge-token') { res.writeHead(401); res.end(); return; }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ data: [
+      { id: 'gpt-6-astra' }, { id: 'gpt-5.6-luna' }, { id: 'gpt-5.6-terra', recommended: true }, { id: 'gpt-5.6-terra' },
+    ] }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const config = configFixture();
+  config.text_model_profiles.custom.base_url = `http://127.0.0.1:${server.address().port}/v1`;
+  const models = await discoverSelectableTextModels(config);
+  assert.equal(models[0].modelName, 'gpt-5.6-terra');
+  assert.deepEqual(models.filter(m => m.recommended).map(m => m.modelName), ['gpt-5.6-terra']);
+  assert.deepEqual(models.filter(m => m.source === 'codex').map(m => m.modelName).sort(), ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-6-astra']);
+  assert.ok(models.some(m => m.modelName === 'deepseek-v4-flash'));
+  const resolved = resolveTextModelConfig(config, models[0]);
+  assert.equal(resolved.model_name, 'gpt-5.6-terra');
+  assert.equal(resolved.base_url, config.text_model_profiles.custom.base_url);
+  assert.equal(config.model_name, 'deepseek-v4-flash');
+  assert.equal(config.text_model_profiles.custom.model_name, 'gpt-6-astra');
+});
+
+test('unavailable bridge falls back to configured choices without hiding other providers', async () => {
+  const config = configFixture();
+  config.text_model_profiles.custom.base_url = 'http://127.0.0.1:1/v1';
+  const models = await discoverSelectableTextModels(config);
+  assert.deepEqual(models.map(m => m.modelName), ['gpt-6-astra', 'deepseek-v4-flash']);
+});
 
 function configFixture() {
   return {

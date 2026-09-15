@@ -12,16 +12,23 @@ export interface BusinessEvidence {
   files: { name: string; sourcePath: string; sha256: string }[];
 }
 export interface BusinessBidState {
-  companyName: string; projectName: string; deadline: string;
+  companyName: string; companyNames: string[]; projectName: string; deadline: string;
   files: { id: string; name: string; chars: number; parserLabel: string }[];
   evidence: BusinessEvidence[]; excludedEvidence: number;
   analysis: BusinessAnalysis | null; analysisComplete: boolean; analysisConfirmed: boolean;
   analysisCoverage: { completed: number; total: number } | null;
   analysisTask: TaskEventTask | null;
   fieldValues: Record<string, string>; textModelSelection: TextModelSelection | null;
+  formPlan: {
+    fields: { key: string; label: string; scope: 'fixed' | 'company' | 'project' | 'other' | 'manual'; value: string; readOnly: boolean; manualReason?: string; conflict: boolean; occurrences: number; source: string; targets: string[]; sections: string[] }[];
+    totalOccurrences: number; editableCount: number; reusedCount: number;
+  };
+  companyProfiles: Record<string, Record<string, string>>;
+  wordTemplate: { name: string; path: string; sha256: string; fields: string[] } | null;
   draft: { sections: { id: string; title: string; content: string }[]; pending: { label: string; reason: string; source: string }[]; pendingMarkdown: string; generatedAt: string } | null;
 }
 export interface BusinessBidReview {
+  companyName?: string;
   projectName?: string; deadline?: string; fieldValues?: Record<string, string>;
   textModelSelection?: TextModelSelection; analysisConfirmed?: boolean;
   evidence?: { id: string; confirmed: boolean; requirementIds: string[] }[];
@@ -35,5 +42,7 @@ export interface BusinessBidBridge {
   analyze: () => Promise<TaskEventTask>;
   generate: () => Promise<BusinessBidState>;
   clear: () => Promise<BusinessBidState>;
-  export: (payload: { kind: 'full' | 'pending'; requestId: string }) => Promise<WordExportResult>;
+  importTemplate: () => Promise<BusinessBidState>;
+  clearTemplate: () => Promise<BusinessBidState>;
+  export: (payload: { kind: 'full' | 'pending' | 'template'; requestId: string }) => Promise<WordExportResult>;
 }

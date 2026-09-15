@@ -2437,7 +2437,17 @@ function createExportService({ configStore } = {}) {
 
       try {
         const warnings = [];
-        const buildResult = await buildDocxResult(payload, { onProgress, warnings, developerLogger });
+        let buildResult;
+        if (payload.business_template) {
+          const { renderBusinessTemplate } = require('./businessBidTemplate.cjs');
+          const rendered = renderBusinessTemplate(payload.business_template.buffer, payload.business_template.values);
+          buildResult = { buffer: rendered.buffer, stats, warnings: [
+            ...rendered.missingFields.map(field => `待核实：${field}`),
+            ...rendered.blockedFields.map(field => `待人工填写：${field}`),
+          ] };
+        } else {
+          buildResult = await buildDocxResult(payload, { onProgress, warnings, developerLogger });
+        }
         reportProgress({ onProgress, warnings: buildResult.warnings, stats: buildResult.stats }, 96, '正在写入 Word 文件。');
         developerLogger.write('export.word.write.started', {
           output_file_name: path.basename(result.filePath),
@@ -2445,7 +2455,9 @@ function createExportService({ configStore } = {}) {
           buffer_bytes: buildResult.buffer.length,
         });
         fs.writeFileSync(result.filePath, buildResult.buffer);
-        const message = buildResult.warnings.length
+        const message = payload.business_template
+          ? `Word 模板已导出，${buildResult.warnings.length} 项待核实或人工填写，请核对完整性、表格和版式。`
+          : buildResult.warnings.length
           ? `Word 已导出，但有 ${buildResult.warnings.length} 处图片未能插入，请打开文档核对。`
           : 'Word 已导出，请打开文档核对图片、表格和版式。';
         reportProgress({ onProgress, warnings: buildResult.warnings, stats: buildResult.stats }, 100, message, { phase: 'success' });

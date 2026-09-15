@@ -1,6 +1,13 @@
-const path=require('node:path');const net=require('node:net');
+const fs=require('node:fs');const path=require('node:path');const net=require('node:net');
 const configured=v=>{const s=String(v??'').trim();return /^(?:PENDING_|replace[-_ ]before|your[-_ ](?:api|model)|<.*>)/i.test(s)?'':s;};
 const list=v=>String(v??'').split(',').map(s=>s.trim()).filter(Boolean);
+function resolveCodexExecutable(value,env=process.env){
+ const requested=String(value??'').trim();if(requested!=='auto')return requested;
+ const local=String(env.LOCALAPPDATA??'').trim();if(!local)return '';
+ const root=path.join(local,'OpenAI','Codex','bin');let entries;try{entries=fs.readdirSync(root,{withFileTypes:true});}catch{return '';}
+ const candidates=[];for(const entry of entries){if(!entry.isDirectory())continue;const executable=path.join(root,entry.name,'codex.exe');try{const stat=fs.statSync(executable);if(stat.isFile())candidates.push({executable,mtime:stat.mtimeMs});}catch{}}
+ candidates.sort((a,b)=>b.mtime-a.mtime||b.executable.localeCompare(a.executable));return candidates[0]?.executable||'';
+}
 function internalHost(name){const h=name.replace(/^\[|\]$/g,'').toLowerCase();const ip=net.isIP(h);return ['localhost','::1'].includes(h)||(ip===4&&(/^127\./.test(h)||/^10\./.test(h)||/^192\.168\./.test(h)||/^172\.(1[6-9]|2\d|3[01])\./.test(h)))||(!ip&&!h.includes('.')&&/^[a-z0-9-]+$/.test(h));}
 function loadConfig(env=process.env){
  const mode=env.BID_DELIVERY_MODE||'disabled';if(!['disabled','test','production'].includes(mode))throw Error('delivery_mode_invalid');
@@ -28,9 +35,12 @@ function loadConfig(env=process.env){
  if(config.reportArchive.enabled){const r=config.reportArchive;if(!['test','production'].includes(mode)||!path.isAbsolute(r.cliPath)||!r.profile.trim()||!['bot','user'].includes(r.identity)||!r.folderToken||!r.allowedFolderTokens.includes(r.folderToken)||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer '))throw Error('report_archive_not_configured');}
  if(config.documentRecovery.enabled&&(config.documentRecovery.appId!=='app_17agc8m97f2'||!path.isAbsolute(config.documentRecovery.cliPath)||!config.documentRecovery.profile.trim()||!config.chatId||!config.operatorIds.length||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer ')))throw Error('document_recovery_not_configured');
  const backend=env.BID_MODEL_BACKEND||'api';if(!['api','codex'].includes(backend))throw Error('model_backend_invalid');
- config.codexBridge={enabled:backend==='codex',host:'127.0.0.1',port:Number(env.BID_CODEX_PORT||4383),apiKey:env.BID_CODEX_TOKEN||'',executable:env.BID_CODEX_EXECUTABLE||'',model:env.BID_CODEX_MODEL||'gpt-6-astra',reasoningEffort:'low',root:path.join(dataRoot,'codex'),timeoutMs:Number(env.BID_CODEX_TIMEOUT_MS||240000),maxRequestBytes:1024*1024};
+ config.codexBridge={enabled:backend==='codex',host:'127.0.0.1',port:Number(env.BID_CODEX_PORT||4383),apiKey:env.BID_CODEX_TOKEN||'',executable:resolveCodexExecutable(env.BID_CODEX_EXECUTABLE,env),model:env.BID_CODEX_MODEL||'gpt-6-astra',reasoningEffort:'low',root:path.join(dataRoot,'codex'),timeoutMs:Number(env.BID_CODEX_TIMEOUT_MS||240000),maxRequestBytes:1024*1024};
  if(config.codexBridge.enabled){
   const c=config.codexBridge;
+  c.models=[...new Set([...list(env.BID_CODEX_MODELS),c.model])];
+  c.recommendedModel=env.BID_CODEX_RECOMMENDED_MODEL||c.model;
+  if(c.models.some(model=>!/^[A-Za-z0-9._-]{1,128}$/.test(model))||!c.models.includes(c.recommendedModel))throw Error('codex_models_not_configured');
   if(!path.isAbsolute(c.executable)||c.apiKey.length<32||!Number.isInteger(c.port)||c.port<1||c.port>65535||c.port===config.port||!Number.isInteger(c.timeoutMs)||c.timeoutMs<1000||c.timeoutMs>300000||!/^[A-Za-z0-9._-]{1,128}$/.test(c.model))throw Error('codex_bridge_not_configured');
   config.modelConfig={provider:'custom',backend:'codex',base_url:'http://127.0.0.1:'+c.port+'/v1',api_key:c.apiKey,model_name:c.model};
  }
@@ -56,4 +66,4 @@ function loadConfig(env=process.env){
  }
  return config;
 }
-module.exports={loadConfig,internalHost};
+module.exports={loadConfig,internalHost,resolveCodexExecutable};

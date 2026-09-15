@@ -36,7 +36,6 @@ export const appMenuItems: AppMenuItem[] = [
         label: '商务标',
         description: '整理商务响应、报价口径和合同偏离材料。',
         icon: 'briefcase',
-        notice: githubStarNotice,
       },
     ],
   },

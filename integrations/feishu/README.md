@@ -123,6 +123,10 @@ Content-Type: application/octet-stream
 
 设置 `BID_MODEL_BACKEND=codex`、`BID_CODEX_EXECUTABLE`（官方 Codex CLI 绝对路径）、`BID_CODEX_MODEL` 和至少 32 字符的独立 `BID_CODEX_TOKEN`。CLI 应已使用当前用户的 ChatGPT 登录，`codex login status` 成功。默认使用 `gpt-6-astra`、low 推理强度；模型在云端运行，使用账号可用额度，不是离线本地模型。
 
+可通过 `BID_CODEX_MODELS=gpt-5.6-terra,gpt-5.6-luna,gpt-6-astra` 开启多个模型，并用 `BID_CODEX_RECOMMENDED_MODEL=gpt-5.6-terra` 设置客户端推荐项。`BID_CODEX_MODEL` 仍是既有飞书/预读配置的默认值，并自动包含在允许列表中。推荐模型必须在允许列表内，账号和 CLI 也须支持对应模型；修改后重启桥接服务。
+
+易标技术标、商务标的任务模型列表通过本机桥接 `/v1/models` 动态读取；只访问已配置的本机 Codex 地址，桥接暂不可用时回退到保存的配置。模型选择随工作区保存，新工作区优先推荐项，已有选择保留。请求模型逐次传入 CLI `--model`，JSON/SSE 返回相同模型名，不同模型的缓存互相隔离；不会静默改用更贵的模型。升级客户端 Main 后需重启易标。
+
 主进程在取得单实例租约后启动 `127.0.0.1:4383` 适配器，易标编写自动使用这个地址。预读容器使用 [Codex Compose overlay](deployment/codex-model.compose.yml)，通过 `host.docker.internal` 访问同一适配器；仅从私有环境传入 `CODEX_BRIDGE_PORT/TOKEN/MODEL`，保留原 standalone 的 env 文件及能力接口鉴权。此 token 只用于本机服务间鉴权，不是厂商 API Key，不能替代 Codex 登录。
 
 适配器支持现有文本消息、JSON 对象和 SSE 完成事件；SSE 在模型完成后发出完整内容，不提供逐 token 实时显示。`max_tokens` 作为输出长度要求传入，`temperature` 保留在请求去重标识中，CLI 不提供与原 API 完全等价的采样参数。每次使用临时工作目录、只读沙箱、禁用工具/插件/浏览器，并验证结构化结果；不读取或复制登录令牌。

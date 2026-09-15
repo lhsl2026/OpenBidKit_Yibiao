@@ -9,6 +9,11 @@ function registerBusinessBidIpc({ businessBidStore, taskService, exportService }
     return result.canceled ? businessBidStore.loadBusinessBid() : businessBidStore.importEvidenceFile(result.filePaths[0]);
   });
   ipcMain.handle('business-bid:review', (_event, payload) => businessBidStore.saveReview(payload));
+  ipcMain.handle('business-bid:import-template', async () => {
+    const result = await dialog.showOpenDialog({ title: '导入带填写标记的 Word 模板', properties: ['openFile'], filters: [{ name: 'Word 模板', extensions: ['docx'] }] });
+    return result.canceled ? businessBidStore.loadBusinessBid() : businessBidStore.importTemplate(result.filePaths[0]);
+  });
+  ipcMain.handle('business-bid:clear-template', () => businessBidStore.clearTemplate());
   ipcMain.handle('business-bid:analyze', () => taskService.startBusinessBidAnalysis());
   ipcMain.handle('business-bid:generate', () => businessBidStore.generateDraft());
   ipcMain.handle('business-bid:clear', () => businessBidStore.clear());

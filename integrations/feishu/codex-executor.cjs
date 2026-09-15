@@ -266,7 +266,7 @@ function createCodexExecutor(options, { spawnImpl = spawn } = {}) {
   const config = validateOptions(options);
   if (typeof spawnImpl !== 'function') fail('codex_options_invalid');
 
-  async function run({ messages, responseFormat, signal, maxTokens } = {}) {
+  async function run({ messages, responseFormat, signal, maxTokens, model = config.model } = {}) {
     if (signal?.aborted) fail('codex_aborted');
     const input = requestInput({ messages, responseFormat, maxTokens });
     if (Buffer.byteLength(input) > config.maxInputBytes) fail('codex_input_too_large');
@@ -280,7 +280,7 @@ function createCodexExecutor(options, { spawnImpl = spawn } = {}) {
       catch { fail('codex_workspace_failed'); }
       await runProcess({
         config,
-        args: execArguments(config, schemaPath, resultPath),
+        args: execArguments({ ...config, model }, schemaPath, resultPath),
         cwd: runDirectory,
         input,
         signal,

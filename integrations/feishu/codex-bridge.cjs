@@ -30,9 +30,9 @@ function contentIssue(content, responseFormat) {
   return null;
 }
 
-function normalize(body, model) {
+function normalize(body, models) {
   if (!object(body) || !exactKeys(body, ['model', 'messages', 'response_format', 'max_tokens', 'temperature', 'stream'])
-    || body.model !== model || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 256
+    || !models.includes(body.model) || !Array.isArray(body.messages) || body.messages.length === 0 || body.messages.length > 256
     || (body.stream !== undefined && typeof body.stream !== 'boolean')) throw failure(400, 'invalid_request');
   const messages = body.messages.map(message => {
     if (!object(message) || !exactKeys(message, ['role', 'content'])
@@ -49,14 +49,17 @@ function normalize(body, model) {
   const maxTokens = body.max_tokens ?? 8192, temperature = body.temperature ?? 1;
   if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 32768
     || typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2) throw failure(400, 'invalid_parameters');
-  return { model, messages, responseFormat, maxTokens, temperature };
+  return { model: body.model, messages, responseFormat, maxTokens, temperature };
 }
 
 function createCodexBridge({ config, executor, store, assertOwnership = () => {}, clock = Date.now }) {
   const options = { host: '127.0.0.1', port: 4383, timeoutMs: 300000, maxRequestBytes: 1024 * 1024, ...config.codexBridge };
+  const models = [...new Set([...(options.models || []), options.model])];
+  const recommendedModel = options.recommendedModel || options.model;
   if (options.enabled && (options.host !== '127.0.0.1' || typeof options.apiKey !== 'string' || options.apiKey.length < 32
     || typeof options.model !== 'string' || !options.model.trim() || !Number.isInteger(options.port) || options.port < 0 || options.port > 65535
     || !Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || !Number.isInteger(options.maxRequestBytes) || options.maxRequestBytes <= 0)) throw failure(500, 'bridge_config_invalid');
+  if (options.enabled && (!models.includes(recommendedModel) || models.some(model => typeof model !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(model)))) throw failure(500, 'bridge_config_invalid');
   const expectedAuth = hash('Bearer ' + options.apiKey);
   const jobs = new Map(), queue = [], executions = new Set();
   let active = null, started = false, closed = false, closing = null, leaseTimer = null, authTimer = null;
@@ -139,7 +142,7 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
         if (!(await refreshAuth())) throw failure(503, 'codex_auth_unavailable');
         owned();
         if (job.controller.signal.aborted) throw failure(499, 'request_cancelled');
-        const content = await executor.run({ messages: job.payload.messages, responseFormat: job.payload.responseFormat, maxTokens: job.payload.maxTokens, signal: job.controller.signal });
+        const content = await executor.run({ model: job.payload.model, messages: job.payload.messages, responseFormat: job.payload.responseFormat, maxTokens: job.payload.maxTokens, signal: job.controller.signal });
         owned();
         const issue = contentIssue(content, job.payload.responseFormat);
         if (issue) throw failure(502, issue);
@@ -185,10 +188,10 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
     queueMicrotask(pump);
     return job;
   }
-  function completion(response, result, stream) {
+  function completion(response, result, stream, model) {
     owned();
     if (closed) throw failure(503, 'bridge_closed');
-    const base = { id: result.id, created: result.created, model: options.model };
+    const base = { id: result.id, created: result.created, model };
     if (!stream) { json(response, 200, { ...base, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: result.content }, finish_reason: 'stop' }] }); return; }
     if (response.destroyed || response.writableEnded) return;
     response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive' });
@@ -212,7 +215,7 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
       if (request.method === 'GET' && pathname === '/ready') {
         const ready = status().ready; json(response, ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready', authReady: authReady() }); return;
       }
-      if (request.method === 'GET' && pathname === '/v1/models') { json(response, 200, { object: 'list', data: [{ id: options.model, object: 'model', owned_by: 'local-codex' }] }); return; }
+      if (request.method === 'GET' && pathname === '/v1/models') { json(response, 200, { object: 'list', data: models.map(id => ({ id, object: 'model', owned_by: 'local-codex', recommended: id === recommendedModel })) }); return; }
       const scoped = pathname.match(/^\/v1\/attempts\/([a-f0-9]{64})\/chat\/completions$/);
       const cacheOnly = pathname === '/v1/cache-only/chat/completions';
       if (request.method !== 'POST' || (pathname !== '/v1/chat/completions' && !scoped && !cacheOnly)) throw failure(404, 'not_found');
@@ -221,10 +224,10 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
       const body = await readBody(request);
       owned(); if (closed) throw failure(503, 'bridge_closed');
       if (response.destroyed || request.aborted) return;
-      const payload = normalize(body, options.model);
+      const payload = normalize(body, models);
       job = getJob(scoped ? { ...payload, attemptScope: scoped[1] } : payload, cacheOnly); job.clients++;
       const result = await job.promise;
-      completion(response, result, body.stream === true);
+      completion(response, result, body.stream === true, payload.model);
     } catch (error) { respondError(response, error); }
     finally { release(); }
   });
