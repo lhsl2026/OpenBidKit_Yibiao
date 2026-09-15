@@ -533,13 +533,16 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
   }
 
   function subscribe(webContents) {
-    subscribers.add(webContents);
+    if (!webContents || webContents.isDestroyed()) return;
+    if (!subscribers.has(webContents)) {
+      subscribers.add(webContents);
+      webContents.once('destroyed', () => subscribers.delete(webContents));
+    }
     for (const task of activeTasks.values()) {
       if (!webContents.isDestroyed()) {
         webContents.send('tasks:event', { task, ...getSnapshotForTask(task) });
       }
     }
-    webContents.once('destroyed', () => subscribers.delete(webContents));
   }
 
   /**

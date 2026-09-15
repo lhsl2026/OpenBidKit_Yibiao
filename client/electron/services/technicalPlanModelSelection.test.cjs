@@ -26,7 +26,7 @@ test('persists the selected text model in the technical plan workspace', (t) => 
     taskLogStore: { list: () => [], sync: () => {}, clear: () => {} },
   });
 
-  assert.equal(schemaVersion, 24);
+  assert.equal(schemaVersion, 25);
   store.saveTextModelSelection({ provider: 'custom', modelName: 'gpt-6-astra', label: 'Codex · gpt-6-astra' });
   assert.deepEqual(store.loadTechnicalPlan().textModelSelection, {
     provider: 'custom',
