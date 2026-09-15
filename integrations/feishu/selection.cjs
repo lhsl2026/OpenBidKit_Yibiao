@@ -11,7 +11,7 @@ function initialCard(state){
  const options=state.projects.map((project,index)=>({text:{tag:'plain_text',content:`${index+1}. ${String(project.title).slice(0,90)}`},value:project.eventId}));
  const details=state.projects.map((project,index)=>`${index+1}. **${safe(project.title)}**${project.budgetText?`\n预算：${safe(project.budgetText)}`:''}${project.deadlineText?`\n截止：${safe(project.deadlineText)}`:''}`).join('\n\n');
  return {schema:'2.0',config:{update_multi:true,width_mode:'default',enable_forward:false},header:{title:{tag:'plain_text',content:'请选择需要预读的项目'},template:'yellow'},body:{direction:'vertical',vertical_spacing:'12px',padding:'12px',elements:[
-  {tag:'markdown',content:'**重点项目已进入处理队列，预读结果以完成后的项目卡为准。** 以下项目只有在确认后才会开始查找和预读。'},
+  {tag:'markdown',content:'**重点项目已进入处理队列，预读结果以完成后的项目卡为准。**\n\n第 1 步：在下拉框勾选项目。\n\n第 2 步：点击下方蓝色“预读所选项目”提交；仅勾选不会开始预读。'},
   {tag:'form',name:'openbidkit_selection_form',direction:'vertical',vertical_spacing:'12px',elements:[{tag:'markdown',content:details},{tag:'multi_select_static',name:'events',required:true,width:'fill',placeholder:{tag:'plain_text',content:'选择一个或多个项目'},options},{tag:'button',name:`openbidkit_selection_${state.batchKey}_${state.challenge}`,text:{tag:'plain_text',content:'预读所选项目'},type:'primary_filled',width:'fill',form_action_type:'submit'}]},
   {tag:'column_set',flex_mode:'none',columns:[{tag:'column',width:'weighted',weight:1,elements:[{tag:'button',text:{tag:'plain_text',content:'本批都不预读'},type:'danger',width:'fill',behaviors:[{type:'callback',value:{agent:'openbidkit-selection',batchKey:state.batchKey,challenge:state.challenge,action:'decline'}}]}]}]}
  ]}};
@@ -102,7 +102,16 @@ function createSelection({store,config,preread,onReceipt,clock=Date.now,assertOw
   const stateKey=store.get('selection-inbox:'+inboxId);if(!stateKey)return false;const state=store.get(stateKey);if(!state)return false;
   store.set(stateKey,{...state,status:'edited',updatedAt:clock()});updateCard(state,'edited');return true;
  }
- return {queue,act,invalidateInbox};
+ function refreshWaitingCards(){
+  assertOwnership();let changed=0;
+  for(const row of store.db.prepare("SELECT value FROM settings WHERE key LIKE 'selection:%'").all()){
+   const state=JSON.parse(row.value);if(state?.status!=='waiting'||typeof state.outboxId!=='string')continue;
+   const payload=JSON.stringify(initialCard(state));
+   changed+=store.db.prepare("UPDATE outbox SET payload=?,delivered=0,next_at=0,last_error=NULL WHERE id=? AND payload<>?").run(payload,state.outboxId,payload).changes;
+  }
+  return changed;
+ }
+ return {queue,act,invalidateInbox,refreshWaitingCards};
 }
 
 module.exports={createSelection,selectionToken,batchKeyFor};

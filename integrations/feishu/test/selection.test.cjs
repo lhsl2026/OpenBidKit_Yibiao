@@ -24,12 +24,22 @@ test('queue creates one stable Card 2.0 outbox entry and never calls preread',t=
  const rows=store.listOutbox(Infinity);assert.equal(rows.length,1);assert.equal(rows[0].project_id,null);assert.equal(rows[0].id,state.outboxId);
  const card=JSON.parse(rows[0].payload);assert.equal(card.schema,'2.0');assert.equal(card.body.elements.length,3);
  assert.match(card.body.elements[0].content,/进入处理队列/);
+ assert.match(card.body.elements[0].content,/第 1 步.*第 2 步/s);
  const form=card.body.elements[1],select=form.elements.find(e=>e.tag==='multi_select_static'),submit=form.elements.find(e=>e.form_action_type==='submit');
  assert.equal(form.tag,'form');assert.equal(select.name,'events');assert.deepEqual(select.options.map(o=>o.value),ids);
  assert.equal(submit.name,`openbidkit_selection_${state.batchKey}_${state.challenge}`);assert.equal('behaviors' in submit,false);
  const decline=card.body.elements[2].columns[0].elements[0];assert.deepEqual(decline.behaviors[0].value,{agent:'openbidkit-selection',batchKey:state.batchKey,challenge:state.challenge,action:'decline'});
  store.transaction(()=>setupQueueAgain(store));assert.equal(store.listOutbox(Infinity).length,1);
  function setupQueueAgain(target){createSelection({store:target,config:{chatId:'oc_target',operatorIds:['ou_allowed'],companyId:'company'},preread:{select:()=>assert.fail('queue posted')}}).queue(receipt);}
+});
+
+test('refresh updates an existing waiting card once without creating another message',t=>{
+ const {store,selection,state}=setup(t);
+ store.db.prepare("UPDATE outbox SET payload='{}',delivered=1 WHERE id=?").run(state.outboxId);
+ assert.equal(selection.refreshWaitingCards(),1);
+ const refreshed=store.db.prepare('SELECT payload,delivered FROM outbox WHERE id=?').get(state.outboxId);
+ assert.equal(refreshed.delivered,0);assert.match(JSON.parse(refreshed.payload).body.elements[0].content,/第 1 步.*第 2 步/s);
+ assert.equal(selection.refreshWaitingCards(),0);assert.equal(store.db.prepare('SELECT COUNT(*) n FROM outbox').get().n,1);
 });
 
 test('same completed callback posts once and nested selection task becomes a watch',async t=>{

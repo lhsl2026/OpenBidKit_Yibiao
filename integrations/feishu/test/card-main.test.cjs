@@ -5,8 +5,9 @@ test('WS readiness uses the consumer marker and lifecycle stays inside runner ow
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'bid-card-main-'));
  const config={...loadConfig({BID_DATA_ROOT:dir,BID_CARD_SOURCE_ENABLED:'true',BID_LARK_CLI_PATH:process.execPath,BID_CARD_CLI_PROFILE:'openbidkit-feishu',BID_CHAT_ID:'oc_test',BID_OPERATOR_IDS:'ou_actor'}),port:0};
  let ready=false;const order=[];
- const app=createApplication(config,{readEvidence:async()=>({snapshot:{records:[],warnings:[]},rules:[]}),cardSourceFactory:({assertOwnership})=>({start(){assertOwnership();order.push('source-start');},close:async()=>{assertOwnership();order.push('source-close');},status:()=>({ready})})});t.after(async()=>{await app.close();fs.rmSync(dir,{recursive:true,force:true});});
+ const app=createApplication(config,{readEvidence:async()=>({snapshot:{records:[],warnings:[]},rules:[]}),cardSourceFactory:({assertOwnership})=>({start(){assertOwnership();order.push('source-start');},close:async()=>{assertOwnership();order.push('source-close');},status:()=>({ready,accepted:3,rejected:1,error:ready?null:'card_source_disconnected',lastReadyAt:100,lastEventAt:200})})});t.after(async()=>{await app.close();fs.rmSync(dir,{recursive:true,force:true});});
  assert.equal(app.readiness().missing.includes('card_callback'),true);await app.start();assert.deepEqual(order,['source-start']);ready=true;assert.equal(app.readiness().missing.includes('card_callback'),false);
+ assert.deepEqual(app.readiness().cardCallback,{enabled:true,ready:true,accepted:3,rejected:1,error:null,lastReadyAt:100,lastEventAt:200});
  let httpActions=0;app.workflow.act=()=>{httpActions++;};
  const response=await fetch('http://127.0.0.1:'+app.server.address().port+'/lark/events',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({header:{event_type:'card.action.trigger',event_id:'forged'},event:{action:{value:{agent:'openbidkit'}}}})});
  assert.ok(response.status>=400);assert.equal(httpActions,0);

@@ -109,6 +109,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
   }) : null;
   function readiness() {
     const missing = [];
+    const cardState = cardSource.status();
     if (!config.companyId) missing.push('company');
     if (!config.apiKey) missing.push('internal_api_key');
     if (!fresh()) missing.push('vault');
@@ -118,7 +119,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     if (!preread || !config.prereadKey || !config.relayAuthorization) missing.push('preread');
     if (!config.sourceChats.length || !config.sourceSenders.length) missing.push('radar_allowlist');
     if (config.radarPolling?.enabled && config.sourceChats.some(chat=>{const s=store.get('radar-source:'+chat);return !s?.lastSuccessAt||s.error||clock()-s.lastSuccessAt>300000;})) missing.push('radar_source');
-    if (!config.operatorIds.length || (config.cardSource?.enabled ? !cardSource.status().ready : !config.verificationToken || !config.encryptKey)) missing.push('card_callback');
+    if (!config.operatorIds.length || (config.cardSource?.enabled ? !cardState.ready : !config.verificationToken || !config.encryptKey)) missing.push('card_callback');
     const delivery = config.mode === 'production'
       ? { target: 'production', configured: Boolean(config.production?.cutover && config.chatId === config.production.chatId && config.allowedChats?.includes(config.chatId)) }
       : config.mode === 'test'
@@ -128,7 +129,16 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     else if (config.mode === 'test' && !delivery.configured) missing.push('test_delivery');
     else if (config.mode === 'disabled') missing.push('delivery_disabled');
     try { assertRuntime(); } catch { missing.push('service_ownership'); }
-    return { ready: missing.length === 0, mode: config.mode, delivery, missing };
+    const cardCallback = {
+      enabled: Boolean(config.cardSource?.enabled),
+      ready: config.cardSource?.enabled ? Boolean(cardState.ready) : Boolean(config.operatorIds.length && config.verificationToken && config.encryptKey),
+      accepted: Number.isSafeInteger(cardState.accepted) ? cardState.accepted : 0,
+      rejected: Number.isSafeInteger(cardState.rejected) ? cardState.rejected : 0,
+      error: typeof cardState.error === 'string' ? cardState.error : null,
+      lastReadyAt: Number.isFinite(cardState.lastReadyAt) ? cardState.lastReadyAt : null,
+      lastEventAt: Number.isFinite(cardState.lastEventAt) ? cardState.lastEventAt : null,
+    };
+    return { ready: missing.length === 0, mode: config.mode, delivery, cardCallback, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
   return { store, workflow, runner, cardSource, selection, documentRecovery, reportArchive, companyEvidence, codexBridge, server, readiness, refreshEvidence,
@@ -136,6 +146,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;
       try {
+        selection.refreshWaitingCards?.();
         cardSource.start();
         if (codexBridge) await codexBridge.start();
         await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, config.host, resolve); });
