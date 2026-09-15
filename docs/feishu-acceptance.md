@@ -61,3 +61,10 @@ Task 4 收口验证扩展为 259 项：258 通过、0 失败、1 项因缺少本
 公司证明材料、人员资格、评分归类及来源核验不足时继续“待核实”；助手不代替员工确认投标，不自动报价、签章或提交。
 
 私人收据、文件、真实消息和文档 ID、数据库及凭证只保存在忽略目录，不进入 Git。操作说明见 [集成 README](../integrations/feishu/README.md) 和 [Windows 部署](../integrations/feishu/deployment/README.md)。
+
+## 2026-09-15 标书入口升级
+
+- 商务标少填表、Word 模板、多公司主体和任务级多模型增强已收口为提交 `b219c71`；54 项商务定向测试、49 项飞书桥接定向测试、Electron native smoke、生产构建、20 项效率验收和 64 项隔离 Electron 页面/IPC/SQLite/DOCX 验收通过。
+- 深链接新增技术标和商务标专用目标；存量 `yibiao://new-bid` 改为打开标书生成选择页。首次启动事件增加 Renderer 就绪握手，避免 Main 在 React 订阅前发送导致链接丢失。实际 Electron 验证首次商务标、运行中选择页和运行中技术标三条路径均进入对应页面。
+- 正式群原长期入口消息已原位更新为“生成技术标”和“生成商务标”两个按钮，没有发送重复卡片。机器人身份回读确认消息已更新且两个按钮可见；飞书消息回读只展开 Web fallback，不返回 `pc_url`，专用 `pc_url` 由卡片结构测试验证，仍需以一次用户真实点击作为客户端侧最终验收。
+- Windows `yibiao` 协议登记仍指向当前客户端；更新后生产预检 7/7 通过，主服务保持 production ready。代码提交 `7a762b4` 并已推送至 `origin/codex/feishu-integration`。
