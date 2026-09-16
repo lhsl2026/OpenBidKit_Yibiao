@@ -116,6 +116,16 @@ $credential = Get-Credential
 
 停止当前服务用 `Stop-Feishu.ps1`；暂停下次登录启动用 `Disable-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'`。恢复使用 `Enable-ScheduledTask`。凭证内容不放入命令行参数。
 
+当任务已经升级为 `Password + AtStartup` 时，监管器位于批处理登录会话；部分 Windows 环境不会向当前交互会话公开该进程的命令行或命名管道。此时 `Stop-Feishu.ps1` 会按安全设计报告“PID 属于另一进程”并保持服务不动。需要重启时，应先核对计划任务动作仍指向本目录的 `Start-Feishu.ps1`，再用任务计划程序停止精确任务实例：
+
+```powershell
+Stop-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'
+# 确认任务不再 Running、记录的监管器/子进程均退出且服务端口不再监听后：
+Start-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'
+```
+
+不要删除 PID 文件、按 `node.exe` 进程名批量结束或绕过进程身份核验。启动后必须重新检查 `/ready` 和 `deployment/production-check.cjs`。
+
 ## 本次验证及环境现象
 
 `node --test integrations/feishu/test/supervisor.test.cjs` 使用临时 HTTP 辅助子进程验证：健康失效后先结束旧 PID 再重启、`/ready` 503 不重启、同数据根互斥、PID 创建时间与入口身份、监管器退出后的孤儿清理，以及跨数据根复制 PID 文件不会结束另一个实例。未使用真实模型、群或实际服务数据。
