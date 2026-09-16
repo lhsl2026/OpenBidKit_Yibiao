@@ -52,6 +52,12 @@ test('selection routing admits only the fixed agent contract and sanitized UUID 
  for(const e of [event({...v,agent:'unapproved'}),event({...v,challenge:''}),event(v,{form_value:JSON.stringify({events:[id],other:'private'})}),event(v,{form_value:JSON.stringify({events:['not-uuid']})}),event(v,{operator_id:'ou_other'}),event(v,{form_value:JSON.stringify({events:[id]}),message_id:'bad'})])emit(children[0],e);
  await waitFor(()=>received.length===1);await new Promise(r=>setTimeout(r,20));assert.deepEqual(received,[{v,e:{eventId:'event-1',actorId:'ou_actor',chatId:'oc_test',messageId:'om_card',formValue:{events:[id]}}}]);
 });
+test('group file selection reaches its handler for the source member while preserving callback context',async t=>{
+ const received=[];const {children}=source(t,{}, {onAction:(v,e)=>received.push({v,e})});ready(children[0]);
+ const v={agent:'openbidkit-group-file',action:'select_task',jobId:'a'.repeat(40),taskId:'11111111-1111-4111-8111-111111111111',revision:2};emit(children[0],event(v,{operator_id:'ou_source_member'}));
+ for(const bad of [{...v,action:'other'},{...v,jobId:'bad'},{...v,taskId:''},{...v,revision:0}])emit(children[0],event(bad,{operator_id:'ou_source_member',event_id:'bad-'+Math.random()}));
+ await waitFor(()=>received.length===1);await new Promise(r=>setTimeout(r,15));assert.deepEqual(received,[{v,e:{eventId:'event-1',actorId:'ou_source_member',chatId:'oc_test',messageId:'om_card'}}]);
+});
 test('Card2 form submit reconstructs selection only from the exact scoped action name',async t=>{
  const received=[];const {children}=source(t,{}, {onAction:(v,e)=>received.push({v,e})});ready(children[0]);
  const v={agent:'openbidkit-selection',batchKey:'a'.repeat(40),challenge:'b'.repeat(32),action:'select'},id='123e4567-e89b-12d3-a456-426614174000';

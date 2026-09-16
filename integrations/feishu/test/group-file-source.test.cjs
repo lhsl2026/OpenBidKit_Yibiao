@@ -6,7 +6,7 @@ const os=require('node:os');
 const path=require('node:path');
 const {createHash}=require('node:crypto');
 const {createStore}=require('../store.cjs');
-const {createFileDownloader,createGroupFileSource,historyArguments,inspectLocalFile,matchWaitingTask,normalizeFileMessage}=require('../group-file-source.cjs');
+const {buildGroupFileStatusCard,createFileDownloader,createGroupFileSource,historyArguments,inspectLocalFile,matchWaitingTask,normalizeFileMessage}=require('../group-file-source.cjs');
 
 const input={id:'job',companyId:'隆创信息有限公司',chatId:'chat',messageId:'message',senderId:'sender',createTime:'1785190080000',fileName:'招标文件.pdf',fileKey:'file_key',replyTo:null};
 
@@ -106,4 +106,16 @@ test('ambiguous matches wait for selection before upload and interrupted remote 
 test('a repeated file reuses the canonical completed task without upload or model submission',async t=>{
  const {store,source,calls}=stateSetup(t);store.receiveGroupFile({...input,id:'canonical',messageId:'canonical-message'},1);store.updateGroupFileJob('canonical','discovered',{stage:'downloaded',sha256:'b'.repeat(64),sourcePath:'C:/group-files/canonical.pdf',fileSize:20,taskId:'canonical-task'},2);store.updateGroupFileJob('canonical','downloaded',{stage:'completed'},3);
  await source.tick();const repeated=store.getGroupFileJob('new-job');assert.equal(repeated.stage,'completed');assert.equal(repeated.canonicalJobId,'canonical');assert.equal(repeated.taskId,'canonical-task');assert.deepEqual(calls,{download:1,upload:0,sign:0,submit:0,attach:0});
+});
+
+test('status cards use fixed safe copy and ambiguous matches expose bounded callbacks',()=>{
+ const received=buildGroupFileStatusCard({id:'a'.repeat(40),fileName:'<at id=all>项目.pdf</at>',stage:'discovered',statusRevision:1,errorCode:null,candidates:null});const receivedText=JSON.stringify(received);assert.equal(received.schema,'2.0');assert.match(receivedText,/已收到招标文件，正在下载并校验/);assert.doesNotMatch(receivedText,/<at/);
+ const waiting=buildGroupFileStatusCard({id:'a'.repeat(40),fileName:'项目.pdf',stage:'waiting_selection',statusRevision:2,errorCode:'group_file_selection_required',candidates:[{taskId:'task-1',title:'项目一',manualActionId:'action-1'},{taskId:'task-2',title:'项目二',manualActionId:'action-2'}]});const callbacks=waiting.body.elements.filter(element=>element.tag==='button').map(element=>element.behaviors[0].value);assert.equal(callbacks.length,2);assert.deepEqual(callbacks[0],{agent:'openbidkit-group-file',action:'select_task',jobId:'a'.repeat(40),taskId:'task-1',revision:2});
+ const failed=JSON.stringify(buildGroupFileStatusCard({id:'a'.repeat(40),fileName:'项目.pdf',stage:'failed',statusRevision:3,errorCode:'group_file_too_large'}));assert.match(failed,/文件超过 30 MiB/);for(const secret of ['C:\\','file_key','https://signed','a'.repeat(64)])assert.equal(failed.includes(secret),false);
+});
+
+test('manual task selection is authorized, revisioned and idempotent',async t=>{
+ const candidates=[{taskId:'one',manualActionId:'a1',title:'钟山区人民医院采购项目一'},{taskId:'two',manualActionId:'a2',title:'钟山区人民医院采购项目二'}];const {store,source}=stateSetup(t,{candidates});store.updateGroupFileJob('new-job','discovered',{stage:'downloaded',sha256:'d'.repeat(64),sourcePath:'C:/group-files/d.pdf',fileSize:1},1001);await source.tick();const waiting=store.getGroupFileJob('new-job');store.bindGroupFileStatus(waiting.id,'om_status');
+ const value={agent:'openbidkit-group-file',action:'select_task',jobId:waiting.id,taskId:'two',revision:waiting.statusRevision},event={eventId:'evt-select',actorId:waiting.senderId,chatId:waiting.chatId,messageId:'om_status'};
+ assert.deepEqual(await source.select(value,event),{status:'selected',jobId:'new-job',taskId:'two'});assert.deepEqual(await source.select(value,event),{status:'selected',jobId:'new-job',taskId:'two'});const selected=store.getGroupFileJob('new-job');assert.equal(selected.stage,'ready_upload');assert.equal(selected.manualActionId,'a2');await assert.rejects(source.select({...value,taskId:'one'},{...event,eventId:'evt-forged',actorId:'outsider'}),/group_file_selection/);
 });

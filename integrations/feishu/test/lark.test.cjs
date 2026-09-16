@@ -1,5 +1,5 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');
-const {createLarkClient,deliverOutbox}=require('../lark.cjs');const {buildCard,buildWritingPortalCard}=require('../card.cjs');
+const {createLarkClient,deliverGroupFileStatus,deliverOutbox}=require('../lark.cjs');const {buildCard,buildWritingPortalCard}=require('../card.cjs');
 const {createStore}=require('../store.cjs');
 test('card uses Card2 grouped layout, escaped text and versioned callbacks',()=>{const p={id:'p',version:'v1',companyId:'公司',input:{handoff:{task:{title:'<at id=all>恶意</at>'},requirements:[]},deadline:'2026-12-01'},assessment:{decision:'review',blockers:['缺证书'],actions:['补证书']},humanDecision:null};const c=buildCard(p);assert.equal(c.schema,'2.0');assert.ok(c.body.elements.some(e=>e.tag==='column_set'));assert.ok(!JSON.stringify(c.body).includes('<at'));assert.ok(JSON.stringify(c).includes('v1'));});
 test('decision card exposes a desktop Yibiao entry with a web fallback',()=>{
@@ -53,4 +53,14 @@ test('non-project card changes during send or update remain queued for the lates
   client.sendCard=async()=>assert.fail('binding must be reused');client.updateCard=async(_,card)=>{calls.push(card.state);};await deliverOutbox({store,client,mode:'test',chatId:'a',allowedChats:['a']});
   assert.equal(store.db.prepare('SELECT delivered FROM outbox WHERE id=?').get(id).delivered,1);assert.equal(calls.at(-1),'edited');store.close();
  }
+});
+test('group file status creates once with a stable UUID and later revisions patch the same card',async()=>{
+ const store=createStore(':memory:');const job=store.receiveGroupFile({id:'job',companyId:'company',chatId:'formal',messageId:'source',senderId:'member',createTime:'1',fileName:'a.pdf',fileKey:'file',replyTo:null},1);store.enqueueGroupFileStatus(job.id,{schema:'2.0',state:'received'},1);
+ const calls=[];const client={sendCard:async(chat,card,uuid)=>{calls.push({kind:'send',chat,card,uuid});return'om_status';},updateCard:async(messageId,card)=>calls.push({kind:'update',messageId,card})};
+ await deliverGroupFileStatus({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],clock:()=>2});assert.equal(calls[0].uuid,job.statusCreateId);assert.equal(store.getGroupFileJob(job.id).statusMessageId,'om_status');
+ store.enqueueGroupFileStatus(job.id,{schema:'2.0',state:'working'},3);await deliverGroupFileStatus({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],clock:()=>4});assert.deepEqual(calls.map(call=>call.kind),['send','update']);assert.equal(calls[1].messageId,'om_status');
+});
+test('an uncertain group file status create never sends a second card after reconciliation expires',async()=>{
+ const store=createStore(':memory:');const job=store.receiveGroupFile({id:'job',companyId:'company',chatId:'formal',messageId:'source',senderId:'member',createTime:'1',fileName:'a.pdf',fileKey:'file',replyTo:null},1);store.enqueueGroupFileStatus(job.id,{schema:'2.0'},1);let now=2,calls=0;const client={sendCard:async()=>{calls++;throw Error('unknown');}};
+ await deliverGroupFileStatus({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],clock:()=>now});now+=46*60000;await deliverGroupFileStatus({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],clock:()=>now});assert.equal(calls,1);assert.equal(store.db.prepare('SELECT delivered FROM group_file_status_outbox').get().delivered,-1);store.close();
 });

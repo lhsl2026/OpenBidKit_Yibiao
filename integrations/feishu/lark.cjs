@@ -50,4 +50,17 @@ async function deliverOutbox({store,client,mode,chatId,allowedChats=[],clock=Dat
     }catch{assertOwnership();store.retry(row,clock());}
   }
 }
-module.exports={createLarkClient,deliverOutbox};
+async function deliverGroupFileStatus({store,client,mode,chatId,allowedChats=[],clock=Date.now,assertOwnership=()=>{}}){
+ if(!['test','production'].includes(mode)||!chatId||!allowedChats.includes(chatId))return;
+ for(const row of store.listGroupFileStatus(clock())){
+  assertOwnership();const job=store.getGroupFileJob(row.job_id);if(!job||job.chatId!==chatId){store.finishGroupFileStatus(row.id);continue;}
+  if(!job.statusMessageId&&row.first_attempt!==null&&clock()-row.first_attempt>45*60000){store.manualGroupFileStatus(row.id);continue;}
+  store.attemptGroupFileStatus(row.id,clock());
+  try{
+   if(job.statusMessageId){await client.updateCard(job.statusMessageId,row.card);assertOwnership();}
+   else{const messageId=await client.sendCard(chatId,row.card,job.statusCreateId);assertOwnership();store.bindGroupFileStatus(job.id,messageId);}
+   store.finishGroupFileStatus(row.id);
+  }catch{assertOwnership();store.retryGroupFileStatus(row.id,clock());}
+ }
+}
+module.exports={createLarkClient,deliverGroupFileStatus,deliverOutbox};
