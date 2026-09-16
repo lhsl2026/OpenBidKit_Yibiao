@@ -14,6 +14,7 @@ function productionConfigReady(config) {
     p.chatId && p.allowedChats?.includes(p.chatId) && !overlap && config.companyId === '隆创信息有限公司' &&
     config.appId && config.appSecret && config.operatorIds?.length && config.sourceChats?.length && config.sourceSenders?.length &&
     config.radarPolling?.enabled && config.radarPolling.cliPath && config.radarPolling.profile &&
+    config.groupFileSource?.enabled && config.groupFileSource.cliPath && config.groupFileSource.profile &&
     config.cardSource?.enabled && config.cardSource.cliPath && config.cardSource.profile &&
     config.reportArchive?.enabled && config.reportArchive.folderToken && config.reportArchive.allowedFolderTokens?.includes(config.reportArchive.folderToken) &&
     config.reportArchive.profile && ['bot', 'user'].includes(config.reportArchive.identity) && config.companyEvidence?.enabled &&
@@ -23,7 +24,7 @@ function productionConfigReady(config) {
 }
 
 async function defaultCli(config, { args, profile, identity }) {
-  const executable = config.cardSource?.cliPath || config.radarPolling?.cliPath || config.reportArchive?.cliPath;
+  const executable = config.cardSource?.cliPath || config.radarPolling?.cliPath || config.groupFileSource?.cliPath || config.reportArchive?.cliPath;
   const { stdout } = await run(executable, [...args, '--as', identity, '--profile', profile, '--format', 'json'], {
     windowsHide: true, timeout: 60000, maxBuffer: 2 * 1024 * 1024,
     env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' },
@@ -82,13 +83,19 @@ async function runProductionCheck(config, dependencies = {}) {
   } catch { checks.push(fail('radar_sources', 'radar_source_unavailable')); }
 
   try {
+    const end=Date.now(),start=end-60000;
+    await cli({args:['im','+chat-messages-list','--chat-id',config.production.chatId,'--start',new Date(start).toISOString(),'--end',new Date(end).toISOString(),'--order','desc','--page-size','1','--no-reactions'],profile:config.groupFileSource.profile,identity:'user'});
+    checks.push(pass('group_file_source'));
+  } catch { checks.push(fail('group_file_source','group_file_history_unavailable')); }
+
+  try {
     await cli({ args: ['drive', 'files', 'list', '--folder-token', config.reportArchive.folderToken, '--page-size', '1'], profile: config.reportArchive.profile, identity: config.reportArchive.identity });
     checks.push(pass('archive_folder'));
   } catch { checks.push(fail('archive_folder', 'archive_folder_unavailable')); }
 
   try {
     const state = await readiness();
-    const required = new Set(['company_profile', 'model', 'preread', 'radar_allowlist', 'radar_source', 'card_callback', 'service_ownership']);
+    const required = new Set(['company_profile', 'model', 'preread', 'radar_allowlist', 'radar_source', 'group_file_source', 'card_callback', 'service_ownership']);
     const blocked = !state?.ready || !Array.isArray(state.missing) || state.missing.some(item => required.has(item));
     checks.push(blocked ? fail('runtime', 'runtime_not_ready') : pass('runtime'));
   } catch { checks.push(fail('runtime', 'runtime_unavailable')); }

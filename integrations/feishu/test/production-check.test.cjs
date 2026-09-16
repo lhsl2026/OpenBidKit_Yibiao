@@ -10,6 +10,7 @@ function config() {
     testDelivery: { chatId: 'oc_test', allowedChats: ['oc_test'] },
     operatorIds: ['ou_operator'], sourceChats: ['oc_radar'], sourceSenders: ['ou_radar_bot'],
     radarPolling: { enabled: true, cliPath: 'C:/tools/lark-cli.exe', profile: 'radar-user' },
+    groupFileSource: { enabled: true, cliPath: 'C:/tools/lark-cli.exe', profile: 'decision-user', startAt: '2026-09-16T00:00:00+08:00', maxBytes: 31457280, allowedExtensions: ['pdf','doc','docx'], appId: 'app_17agc8m97f2' },
     cardSource: { enabled: true, cliPath: 'C:/tools/lark-cli.exe', profile: 'bid-bot' },
     reportArchive: { enabled: true, cliPath: 'C:/tools/lark-cli.exe', profile: 'report-user', identity: 'user', folderToken: 'fld_archive', allowedFolderTokens: ['fld_archive'] },
     companyEvidence: { enabled: true }, prereadUrl: 'http://127.0.0.1:4382', prereadKey: 'handoff', relayAuthorization: 'Bearer relay',
@@ -37,12 +38,16 @@ test('read-only production preflight verifies the formal chat, members, radar so
   assert.equal(result.ready, true);
   assert.deepEqual(result.checks.map(item => [item.name, item.status]), [
     ['production_config', 'pass'], ['formal_chat', 'pass'], ['operators', 'pass'], ['radar_sources', 'pass'],
-    ['archive_folder', 'pass'], ['runtime', 'pass'], ['scheduled_task', 'pass'],
+    ['group_file_source', 'pass'], ['archive_folder', 'pass'], ['runtime', 'pass'], ['scheduled_task', 'pass'],
   ]);
   assert.ok(calls.some(call => call.args.join(' ').includes('im chats get --chat-id oc_production') && call.profile === 'bid-bot' && call.identity === 'bot'));
   assert.ok(calls.some(call => call.args.join(' ').includes('im +chat-members-list --chat-id oc_production') && call.args.includes('--page-all')));
   assert.ok(calls.some(call => call.args.join(' ').includes('im chats get --chat-id oc_radar') && call.profile === 'radar-user' && call.identity === 'user'));
+  assert.ok(calls.some(call => call.args.join(' ').includes('im +chat-messages-list --chat-id oc_production') && call.args.includes('--page-size') && call.args.includes('1') && call.profile === 'decision-user' && call.identity === 'user'));
   assert.ok(calls.some(call => call.args.join(' ').includes('drive files list --folder-token fld_archive') && call.profile === 'report-user' && call.identity === 'user'));
+});
+test('missing formal group history permission fails the dedicated source gate without exposing identifiers',async()=>{
+ const {deps}=dependencies({cli:async({args})=>{if(args[1]==='+chat-messages-list')throw Error('private');if(args[1]==='+chat-members-list')return {users:[{member_id:'ou_operator'}],truncations:[],has_more:false};if(args[0]==='drive')return {files:[]};return {chat_status:'normal'};}});const result=await runProductionCheck(config(),deps);assert.equal(result.ready,false);assert.equal(result.checks.find(item=>item.name==='group_file_source').code,'group_file_history_unavailable');assert.equal(JSON.stringify(result).includes('oc_production'),false);
 });
 
 test('interactive logon task is reported as the remaining always-on blocker', async () => {

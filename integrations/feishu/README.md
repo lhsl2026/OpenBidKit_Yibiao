@@ -45,6 +45,9 @@ npm.cmd start
 | `PREREAD_HANDOFF_API_KEY` | 读取 handoff 的原始 key |
 | `PREREAD_RELAY_AUTHORIZATION` | 接收标讯的**完整** `Bearer ...` 头，与 handoff key 分开 |
 | `BID_SOURCE_CHAT_IDS` / `BID_SOURCE_SENDER_IDS` | 雷达来源群和发送者白名单，逗号分隔 |
+| `BID_GROUP_FILE_SOURCE_ENABLED` | 在当前正式/测试目标群自动接收成员发送的招标文件 |
+| `BID_GROUP_FILE_CLI_PROFILE` / `BID_GROUP_FILE_START_AT` | 读取目标群历史和下载文件的独立用户 profile，以及首次启用时间 |
+| `BID_GROUP_FILE_MAX_BYTES` / `BID_GROUP_FILE_ALLOWED_EXTENSIONS` | 文件上限和类型；默认 30 MiB，仅 `pdf,doc,docx` |
 | `LARK_APP_ID` / `LARK_APP_SECRET` | 飞书应用机器人身份 |
 | `LARK_VERIFICATION_TOKEN` / `LARK_ENCRYPT_KEY` | 卡片事件验签与解密 |
 | `BID_OPERATOR_IDS` | 可做判标和编写确认的员工 open_id 白名单 |
@@ -74,6 +77,22 @@ npm.cmd start
 后台只跟踪真实回执中的 taskId，每分钟重读 handoff，以发现补件、预读完成或新版本。不假设上游存在任务列表 API。已有任务可用 `POST /watch` 注册 `{ "taskId": "..." }`。也可以 `POST /handoffs` 直接推入 `{ "handoff": {...}, "deadline": "2026-12-01T10:00:00+08:00", "reportUrl": "https://...", "sourceUrl": "https://..." }`。
 
 待确认项目由测试群选择卡呈现，授权员工勾选后才请求预读。重点项目进入上游自动处理队列不代表预读已完成。来源消息变更时暂停旧批次、任务和卡片，保留人工核对状态。
+
+## 正式群文件自动预读
+
+启用 `BID_GROUP_FILE_SOURCE_ENABLED=true` 后，服务只轮询当前模式的唯一目标群。普通群成员发送 PDF、DOC 或 DOCX 时，服务先发送一张“已收到”的状态卡，再下载消息资源、校验文件头和大小、计算 SHA-256，并原位更新处理阶段。群成员不需要登录易标平台。
+
+同一群消息只建立一个接入任务；同一公司主体下相同 SHA-256 的文件复用原预读任务或完成结果，不重复调用模型。文件名能唯一匹配现有待补任务时附加到原任务；存在多个候选时，原发送者或已配置操作人必须在状态卡选择所属项目；无候选时调用 `/openapi/preread/events/lark-group-file` 建立新预读任务。后续仍使用现有 handoff、判标卡和飞书文档归档链路。
+
+状态卡只显示固定阶段和可执行建议。上传或附加操作的结果不明时进入人工核对，不盲目重复外部写入。卡片和日志不显示本地路径、`file_key`、签名 URL、完整哈希、私人标识或内部异常。资格、人员和业绩仍以当前公司证据库为准，资料不足保持“待核实”。
+
+需要重放一条已经存在于群历史中的文件时，先核对它属于当前目标群，再执行：
+
+```powershell
+npm.cmd run replay:group-file -- --chat-id <当前目标群ID> --message-id <文件消息ID>
+```
+
+重放使用同一消息与哈希去重状态，不要求成员重新上传。命令只登记该消息，常驻 runner 继续下载和预读；输出不含文件正文或签名地址。
 
 只有可信且带时区的截止时间才能开启编写。未传入时，服务仅尝试读取预读中无需确认的明确“投标截止/递交截止”字段；歧义日期仍为待核实。预读完整性、文件缺失、扫描页、资格条款和红线等阻塞事项不能被“确认跟进”绕过。
 

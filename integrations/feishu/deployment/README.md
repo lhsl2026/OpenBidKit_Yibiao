@@ -50,6 +50,18 @@ node --env-file-if-exists=.env supervisor.cjs describe
 
 ## 本地文件
 
+正式群文件接入由 `BID_GROUP_FILE_SOURCE_ENABLED` 显式开启，要求独立的已授权用户身份 `BID_GROUP_FILE_CLI_PROFILE`、有效启用时间、当前唯一目标群、内部预读 Relay 和 `BID_MIAODA_APP_ID=app_17agc8m97f2`。默认只接收 PDF、DOC、DOCX，单文件不超过 30 MiB。文件保存到 `BID_DATA_ROOT/group-files` 的内容寻址目录，临时下载目录在成功或确定失败后清理。
+
+启用或恢复时按以下顺序操作：
+
+1. 备份 `workflow.sqlite3` 和私有 `.env`。
+2. 保持旧飞书监听计划任务禁用，保持预读计算容器运行。
+3. 配置 `BID_GROUP_FILE_*`，重启 `OpenBidKitFeishu`。
+4. 检查 `/ready` 不含 `group_file_source`，再运行只读 `production-check.cjs`。
+5. 对启用前的指定文件使用 `npm.cmd run replay:group-file -- --chat-id <群ID> --message-id <消息ID>`；不要用扩大时间窗的方式批量重放未知历史文件。
+
+需要回退时只将 `BID_GROUP_FILE_SOURCE_ENABLED=false` 并重启 OpenBidKit。已有文件任务、预读任务、判标卡和归档文档保留，不删除数据库，也不重新启用旧监听器。
+
 正文恢复由 `BID_DOCUMENT_RECOVERY_ENABLED` 显式开启，要求 `BID_MIAODA_APP_ID=app_17agc8m97f2` 和已授权的用户身份 `BID_DOCUMENT_CLI_PROFILE`。只接收预读服务真实返回的 `waiting_upload`、`complete_tender_document_missing` 与 task/action ID，并仅下载已明确给出的贵州官方公告正文。成功下载的 PDF 按 SHA-256 存在 `writing/sources`，每轮只推进一个任务的一个阶段。
 
 上传前持久化 `uploading`，附加正文前持久化 `attaching`。这两个阶段如遇进程中断或结果不明，会转为 `manual`，不会自动重传或重复提交补件。签名 URL 仅用于当次受鉴权请求，不写数据库或日志。源消息编辑会阻止后续步骤；本地正文校验和必须与 handoff 一致，否则编写仍被阻止。
@@ -91,7 +103,7 @@ Get-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'
 node --env-file-if-exists=.env ./deployment/production-check.cjs
 ```
 
-预检依次确认生产配置、机器人可见正式群、操作人员成员关系、雷达来源群、报告归档目录、当前 `/ready` 运行组件以及 Windows 常开任务。输出只包含固定检查名和诊断码，不打印群 ID、人员 ID、目录 token 或凭证。全部通过后，才同时设置 `BID_DELIVERY_MODE=production` 与 `BID_PRODUCTION_CUTOVER=true` 并重启服务。
+预检依次确认生产配置、机器人可见正式群、操作人员成员关系、雷达来源群、正式群用户身份只读历史权限、报告归档目录、当前 `/ready` 运行组件以及 Windows 常开任务，共 8 项。历史权限探针只读取一分钟窗口的一条消息上限，不下载文件、不发消息、不创建任务、不调用模型。输出只包含固定检查名和诊断码，不打印群 ID、人员 ID、目录 token 或凭证。全部通过后，才同时设置 `BID_DELIVERY_MODE=production` 与 `BID_PRODUCTION_CUTOVER=true` 并重启服务。
 
 默认安装器使用 `Interactive + AtLogOn`，适合当前用户保持登录且机器不休眠的场景。它不满足注销后的常开要求。需要在同一 Windows 账户下随系统启动时，由账户持有人在本机凭证窗口中运行：
 
