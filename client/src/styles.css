@@ -12,6 +12,7 @@
 @import './styles/app-shell-dialogs.css';
 @import './styles/feature-technical-plan.css';
 @import './styles/feature-business-bid.css';
+@import './styles/feature-full-bid.css';
 @import './styles/feature-feasibility-report.css';
 @import './styles/feature-duplicate-check.css';
 @import './styles/feature-rejection-check.css';

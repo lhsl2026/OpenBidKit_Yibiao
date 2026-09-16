@@ -3,6 +3,7 @@ import type { SectionId } from '../shared/types/navigation';
 import { getAppMenuItemById } from './menuConfig';
 import BidOpportunityPage from '../features/bid-opportunity/pages/BidOpportunityPage';
 import BusinessBidPage from '../features/business-bid/pages/BusinessBidPage';
+import FullBidPage from '../features/full-bid/pages/FullBidPage';
 import ContentExpansionReplaceTestPage from '../features/developer/pages/ContentExpansionReplaceTestPage';
 import DeveloperDemoPage, { isDeveloperDemoSection } from '../features/developer/pages/DeveloperDemoPage';
 import AgentTestPage from '../features/developer/pages/AgentTestPage';
@@ -54,6 +55,8 @@ function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSect
       return <FeasibilityReportHome registerLeaveGuard={registerLeaveGuard} onSectionChange={onSectionChange} />;
     case 'business-bid':
       return <BusinessBidPage />;
+    case 'full-bid':
+      return <FullBidPage onSectionChange={onSectionChange} />;
     case 'document-knowledge-base':
       return <KnowledgeBasePage />;
     case 'resources':

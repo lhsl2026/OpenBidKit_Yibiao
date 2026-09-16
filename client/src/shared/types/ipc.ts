@@ -1,5 +1,6 @@
 import type { AiHttpErrorPayload, ChatCompletionRequest, JsonCompletionRequest } from './ai';
 import type { BusinessBidBridge, BusinessBidState } from '../../features/business-bid/types';
+import type { FullBidBridge } from '../../features/full-bid/types';
 import type { DuplicateCheckWorkspacePatch, DuplicateCheckWorkspaceState, FileSelectionResult } from './bid';
 import type { ClientConfig, ConfigSaveResult, ImageModelTestResult, ModelInfoResult, ModelListResult, SelectableTextModel, TextModelSelection, UpdateChannel } from './config';
 import type { KnowledgeAnalysisSnapshot, KnowledgeBaseEvent, KnowledgeBaseIndex, KnowledgeBaseIndexMutationResult, KnowledgeBaseMutationResult, KnowledgeBaseRetryDocumentResult, KnowledgeBaseStartMatchingResult, KnowledgeBaseUploadResult, KnowledgeDocument, KnowledgeFolder, KnowledgeItem } from '../../features/knowledge-base/types';
@@ -492,6 +493,7 @@ export interface AgentSelfCheckReportExportResult {
 
 export interface YibiaoBridge {
   businessBid: BusinessBidBridge;
+  fullBid: FullBidBridge;
   appName: string;
   platform: string;
   getVersion: () => Promise<string>;

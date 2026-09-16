@@ -8,7 +8,9 @@ const { registerDuplicateCheckIpc } = require('./duplicateCheckIpc.cjs');
 const { registerExportIpc } = require('./exportIpc.cjs');
 const { registerFileIpc } = require('./fileIpc.cjs');
 const { registerBusinessBidIpc } = require('./businessBidIpc.cjs');
+const { registerFullBidIpc } = require('./fullBidIpc.cjs');
 const { createBusinessBidStore } = require('../services/businessBidStore.cjs');
+const { createFullBidMergeService } = require('../services/fullBidMergeService.cjs');
 const { registerKnowledgeBaseIpc } = require('./knowledgeBaseIpc.cjs');
 const { registerLicenseIpc } = require('./licenseIpc.cjs');
 const { registerRejectionCheckIpc } = require('./rejectionCheckIpc.cjs');
@@ -115,6 +117,7 @@ const workspaceDatabaseChannels = [
   'business-bid:load', 'business-bid:import', 'business-bid:source', 'business-bid:import-evidence',
   'business-bid:review', 'business-bid:analyze', 'business-bid:generate', 'business-bid:clear', 'business-bid:export',
   'business-bid:import-template', 'business-bid:clear-template',
+  'full-bid:load', 'full-bid:export',
   'technical-plan:load-state',
   'technical-plan:import-tender-document',
   'technical-plan:remove-tender-document',
@@ -265,6 +268,8 @@ function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentS
   const templateStore = createTemplateStore({ db: sqliteDatabase.db });
   const duplicateCheckService = createDuplicateCheckService({ app, configStore, workspaceStore: duplicateCheckStore });
   const taskService = createTaskService({ aiService, agentService, autoConfirmationService, technicalPlanStore, rejectionCheckStore, duplicateCheckStore, feasibilityReportStore, businessBidStore, knowledgeBaseService, duplicateCheckService, openXmlHelperService });
+  const workspaceExportService = createExportService({ configStore });
+  const fullBidMergeService = createFullBidMergeService({ technicalPlanStore, businessBidStore, exportService: workspaceExportService });
   const agentWorkspaceService = createAgentWorkspaceService({ agentService, taskService, technicalPlanStore, feasibilityReportStore });
   agentWorkspaceServiceRef = agentWorkspaceService;
   technicalPlanStore.setAgentWorkspaceChangeListener(() => agentWorkspaceService.emitWorkspacesChanged());
@@ -277,7 +282,8 @@ function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentS
   registerKnowledgeBaseIpc({ knowledgeBaseService });
   registerTechnicalPlanIpc({ technicalPlanStore, taskService });
   registerFeasibilityReportIpc({ feasibilityReportStore, taskService });
-  registerBusinessBidIpc({ businessBidStore, taskService, exportService: createExportService({ configStore }) });
+  registerBusinessBidIpc({ businessBidStore, taskService, exportService: workspaceExportService });
+  registerFullBidIpc({ fullBidMergeService });
   registerDuplicateCheckIpc({ duplicateCheckStore });
   registerRejectionCheckIpc({ rejectionCheckStore, taskService });
   registerTemplateIpc({ templateStore });

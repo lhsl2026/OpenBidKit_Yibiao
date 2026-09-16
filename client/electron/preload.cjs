@@ -14,6 +14,10 @@ const bridge = {
     clear: () => ipcRenderer.invoke('business-bid:clear'),
     export: (payload) => ipcRenderer.invoke('business-bid:export', payload),
   },
+  fullBid: {
+    load: () => ipcRenderer.invoke('full-bid:load'),
+    export: (payload) => ipcRenderer.invoke('full-bid:export', payload),
+  },
   appName: '易标投标工具箱',
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('app:get-version'),

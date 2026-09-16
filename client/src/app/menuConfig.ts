@@ -37,6 +37,12 @@ export const appMenuItems: AppMenuItem[] = [
         description: '整理商务响应、报价口径和合同偏离材料。',
         icon: 'briefcase',
       },
+      {
+        id: 'full-bid',
+        label: '完整标书',
+        description: '合并已生成的商务标与技术标，导出完整投标文件。',
+        icon: 'export',
+      },
     ],
   },
   {

@@ -26,6 +26,7 @@ const pageLabels = {
   'feasibility-report/parameters': '可行性研究报告 - 关键参数',
   'feasibility-report/content': '可行性研究报告 - 正文生成',
   'business-bid': '商务标',
+  'full-bid': '完整标书',
   'knowledge-base': '知识库',
   resources: '资源下载',
   'knowledge-base/library': '知识库 - 文档列表',

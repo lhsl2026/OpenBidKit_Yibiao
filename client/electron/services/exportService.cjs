@@ -31,6 +31,7 @@ const {
   Table,
   TableCell,
   TableLayoutType,
+  TableOfContents,
   TableRow,
   TextRun,
   UnderlineType,
@@ -305,6 +306,14 @@ function paragraph(children, options = {}) {
 
 function pageBreakParagraph() {
   return paragraph([new PageBreak()], { after: 0, line: 0 });
+}
+
+function buildTableOfContentsEntries(items, level = 1) {
+  return (Array.isArray(items) ? items : []).flatMap((item) => {
+    const title = String(item?.title || '').trim();
+    const current = title ? [{ title, level: Math.min(Math.max(level, 1), 6) }] : [];
+    return [...current, ...buildTableOfContentsEntries(item?.children, level + 1)];
+  });
 }
 
 function isLevel1PageBreakEnabled(exportFormat) {
@@ -2013,7 +2022,7 @@ function buildOutlineHeadingParagraph(item, context, level, options = {}) {
   const paraOptions = {
     heading: headingLevel(level),
     ...(context.keepTableRows ? { keepNext: true } : {}),
-    pageBreakBefore: level === 1 && isLevel1PageBreakEnabled(context.exportFormat) && !options.disablePageBreakBefore,
+    pageBreakBefore: level === 1 && (item?.page_break_before === true || isLevel1PageBreakEnabled(context.exportFormat)) && !options.disablePageBreakBefore,
     alignment: style ? alignmentToWordType(style.alignment) : undefined,
     before: options.compact ? 0 : (style ? style.spacing_before_pt * 20 : (level === 1 ? 320 : 200)),
     after: options.compact ? 0 : (style ? style.spacing_after_pt * 20 : 120),
@@ -2081,7 +2090,7 @@ async function addOutlineItems(children, items, context, level = 1) {
     if (useChapterFrame) {
       const rows = [];
       await addChapterFrameRows(rows, [item], context, level);
-      if (isLevel1PageBreakEnabled(context.exportFormat)) {
+      if (item?.page_break_before === true || isLevel1PageBreakEnabled(context.exportFormat)) {
         children.push(pageBreakParagraph());
       }
       children.push(buildChapterFrameTable(context.exportFormat, rows));
@@ -2293,10 +2302,30 @@ async function buildDocxResult(payload, options = {}) {
   const feasibility = context.feasibility;
   if (feasibility?.includeCover) {
     children.push(...buildFeasibilityCoverParagraphs(payload, feasibility));
+  } else if (payload.document_title || payload.document_subtitle || payload.cover_lines) {
+    children.push(
+      paragraph([textRun(payload.document_subtitle || '投标文件', { bold: true, size: 40 })], { alignment: AlignmentType.CENTER, before: 1200, after: 420 }),
+      paragraph([textRun(payload.document_title || payload.project_name || '完整投标文件', { bold: true, size: 34 })], { alignment: AlignmentType.CENTER, after: 900 }),
+      ...(Array.isArray(payload.cover_lines) ? payload.cover_lines : [])
+        .map((line) => paragraph([textRun(String(line || ''), { size: 24 })], { alignment: AlignmentType.CENTER, after: 180 })),
+    );
   } else {
     children.push(
       paragraph([textRun('内容由 AI 生成', { italics: true, size: 18 })], { alignment: AlignmentType.CENTER, after: 120 }),
       paragraph([textRun(payload.project_name || (feasibility ? '可行性研究报告' : '投标技术文件'), { bold: true, size: 34 })], { alignment: AlignmentType.CENTER, after: 300 }),
+    );
+  }
+  if (payload.include_toc) {
+    children.push(
+      pageBreakParagraph(),
+      paragraph([textRun('目录', { bold: true, size: 32 })], { alignment: AlignmentType.CENTER, after: 300 }),
+      new TableOfContents('目录', {
+        hyperlink: true,
+        headingStyleRange: '1-6',
+        useAppliedParagraphOutlineLevel: true,
+        cachedEntries: buildTableOfContentsEntries(payload.outline || []),
+      }),
+      pageBreakParagraph(),
     );
   }
   if (feasibility?.includeNotes) {
