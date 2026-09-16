@@ -36,7 +36,7 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
    if(result?.status!=='triggered'||!uuid(result.taskId)||acquisition?.status!=='waiting_upload'||acquisition.errorCode!=='complete_tender_document_missing'||!uuid(acquisition.actionId)||!url)continue;
    const id=key('document-recovery',result.taskId,acquisition.actionId),existing=store.get(PREFIX+id);
    if(existing){if(existing.sourceUrl!==url)continue;if(!existing.sourceInboxId&&typeof meta.inboxId==='string')save({...existing,sourceInboxId:meta.inboxId});ids.push(id);continue;}
-   const job={id,stage:'download',taskId:result.taskId,actionId:acquisition.actionId,sourceUrl:url,...(typeof meta.inboxId==='string'?{sourceInboxId:meta.inboxId}:{}),...(typeof project.sourceMessageId==='string'?{sourceMessageId:project.sourceMessageId}:{}),createdAt:clock(),updatedAt:clock(),error:null};
+   const job={id,stage:'download',taskId:result.taskId,actionId:acquisition.actionId,sourceUrl:url,...(typeof project.title==='string'&&project.title.trim()?{projectTitle:project.title.trim()}:{}),...(typeof meta.inboxId==='string'?{sourceInboxId:meta.inboxId}:{}),...(typeof project.sourceMessageId==='string'?{sourceMessageId:project.sourceMessageId}:{}),createdAt:clock(),updatedAt:clock(),error:null};
    save(job);ids.push(id);
   }
   return ids;
@@ -116,6 +116,9 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
    manual(job,'document_stage_invalid');
   }finally{running=false;}
  }
- return {queueReceipt,tick,seedAttached,list};
+ function waitingCandidates(){
+  return list().filter(job=>!['attached','manual'].includes(job.stage)&&isSourceActive(job)).map(job=>({taskId:job.taskId,manualActionId:job.actionId,title:job.projectTitle??'',statusCardMessageId:job.statusCardMessageId??null,sourceInboxId:job.sourceInboxId??null}));
+ }
+ return {queueReceipt,tick,seedAttached,list,waitingCandidates};
 }
 module.exports={createDocumentRecovery,createAppStorage,officialUrl};

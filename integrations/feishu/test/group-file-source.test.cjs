@@ -6,7 +6,7 @@ const os=require('node:os');
 const path=require('node:path');
 const {createHash}=require('node:crypto');
 const {createStore}=require('../store.cjs');
-const {createFileDownloader,createGroupFileSource,historyArguments,inspectLocalFile,normalizeFileMessage}=require('../group-file-source.cjs');
+const {createFileDownloader,createGroupFileSource,historyArguments,inspectLocalFile,matchWaitingTask,normalizeFileMessage}=require('../group-file-source.cjs');
 
 const input={id:'job',companyId:'隆创信息有限公司',chatId:'chat',messageId:'message',senderId:'sender',createTime:'1785190080000',fileName:'招标文件.pdf',fileKey:'file_key',replyTo:null};
 
@@ -69,4 +69,41 @@ test('message resources download through the user profile into a content-address
  const result=await downloader.download({id:'job',messageId:'om_file',fileKey:'file_key',fileName:'招标文件.pdf'});
  assert.equal(invocation.args[invocation.args.indexOf('--as')+1],'user');assert.equal(invocation.args[invocation.args.indexOf('--profile')+1],'decision-user');assert.equal(invocation.args[invocation.args.indexOf('--message-id')+1],'om_file');assert.equal(invocation.args[invocation.args.indexOf('--file-key')+1],'file_key');
  assert.equal(path.dirname(result.sourcePath),path.join(root,'objects'));assert.equal(fs.existsSync(result.sourcePath),true);assert.equal(path.basename(result.sourcePath),result.sha256+'.pdf');
+});
+
+test('waiting-task matching prefers an exact card reply and never guesses among title candidates',()=>{
+ const direct={taskId:'t1',manualActionId:'a1',title:'A项目',statusCardMessageId:'om_parent'};
+ assert.deepEqual(matchWaitingTask({job:{replyTo:'om_parent',fileName:'任意名称.pdf'},candidates:[direct]}),{status:'unique',candidate:direct,mode:'reply'});
+ const unique={taskId:'t2',manualActionId:'a2',title:'钟山区人民医院采购项目',statusCardMessageId:null};
+ assert.deepEqual(matchWaitingTask({job:{replyTo:null,fileName:'钟山区人民医院采购项目招标文件.pdf'},candidates:[unique]}),{status:'unique',candidate:unique,mode:'title'});
+ assert.equal(matchWaitingTask({job:{replyTo:null,fileName:'A项目二标段招标文件.pdf'},candidates:[{taskId:'t1',title:'A项目二标段'},{taskId:'t2',title:'A项目二标段补充'}]}).status,'ambiguous');
+ assert.deepEqual(matchWaitingTask({job:{replyTo:null,fileName:'完全不同项目.pdf'},candidates:[unique]}),{status:'none'});
+});
+
+function stateSetup(t,{candidates=[],response,uploadError=false,attachError=false}={}){
+ const store=createStore(':memory:');t.after(()=>store.close());let now=1000;const calls={download:0,upload:0,sign:0,submit:0,attach:0};let submitted;
+ const config={...sourceConfig,groupFileSource:{...sourceConfig.groupFileSource,root:'C:/group-files',appId:'app_17agc8m97f2',cliPath:process.execPath}};
+ const source=createGroupFileSource({store,config,clock:()=>now,downloader:{download:async()=>{calls.download++;return {sha256:'b'.repeat(64),size:20,extension:'.pdf',sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf'};}},storage:{upload:async()=>{calls.upload++;if(uploadError)throw Error('unknown');return {remotePath:'/group/file.pdf'};},sign:async()=>{calls.sign++;return {url:'https://files.example/group.pdf?private=1'};}},preread:{receiveGroupFile:async body=>{calls.submit++;submitted=body;return response??{status:'processed',results:[{status:'triggered',taskId:'new-task'}]};},attachManualDocument:async(taskId,body)=>{calls.attach++;submitted={taskId,body};if(attachError)throw Error('unknown');return {acquisition:{status:'acquired',documentId:'doc',documentVersion:1}};}},waitingCandidates:()=>candidates});
+ const job=store.receiveGroupFile({...input,id:'new-job',messageId:'new-message',fileName:'钟山区人民医院采购项目招标文件.pdf'},now);return {store,source,job,calls,submitted:()=>submitted,advance:()=>{now+=1000;}};
+}
+
+test('a new file uploads once and submits one stable group-file event before watching',async t=>{
+ const {store,source,calls,submitted,advance}=stateSetup(t);await source.tick();advance();await source.tick();advance();await source.tick();advance();await source.tick();
+ assert.deepEqual(calls,{download:1,upload:1,sign:1,submit:1,attach:0});const job=store.getGroupFileJob('new-job');assert.equal(job.stage,'watching');assert.equal(job.taskId,'new-task');assert.equal(submitted().eventId,'openbidkit-group-file-new-job');assert.equal(submitted().candidate.fileName,'钟山区人民医院采购项目招标文件.pdf');assert.equal(store.getWatch('new-task').payload.sourceGroupFileId,'new-job');
+});
+
+test('a uniquely matched waiting task attaches instead of creating another preread task',async t=>{
+ const candidate={taskId:'waiting-task',manualActionId:'manual-action',title:'钟山区人民医院采购项目',statusCardMessageId:null};const {store,source,calls,submitted,advance}=stateSetup(t,{candidates:[candidate]});
+ await source.tick();advance();await source.tick();advance();await source.tick();advance();await source.tick();
+ assert.equal(calls.submit,0);assert.equal(calls.attach,1);assert.equal(submitted().taskId,'waiting-task');assert.equal(submitted().body.manualActionId,'manual-action');assert.equal(submitted().body.candidate.officialCategory,'tender_document');assert.equal(store.getGroupFileJob('new-job').stage,'watching');
+});
+
+test('ambiguous matches wait for selection before upload and interrupted remote writes fail closed',async t=>{
+ const candidates=[{taskId:'one',manualActionId:'a1',title:'钟山区人民医院采购项目一'},{taskId:'two',manualActionId:'a2',title:'钟山区人民医院采购项目二'}];const ambiguous=stateSetup(t,{candidates});ambiguous.store.updateGroupFileJob('new-job','discovered',{stage:'downloaded',sha256:'c'.repeat(64),sourcePath:'C:/group-files/c.pdf',fileSize:1},1001);await ambiguous.source.tick();assert.equal(ambiguous.store.getGroupFileJob('new-job').stage,'waiting_selection');assert.equal(ambiguous.calls.upload,0);
+ const uncertain=stateSetup(t,{uploadError:true});await uncertain.source.tick();uncertain.advance();await uncertain.source.tick();uncertain.advance();await uncertain.source.tick();assert.equal(uncertain.store.getGroupFileJob('new-job').stage,'manual_review');assert.equal(uncertain.calls.upload,1);
+});
+
+test('a repeated file reuses the canonical completed task without upload or model submission',async t=>{
+ const {store,source,calls}=stateSetup(t);store.receiveGroupFile({...input,id:'canonical',messageId:'canonical-message'},1);store.updateGroupFileJob('canonical','discovered',{stage:'downloaded',sha256:'b'.repeat(64),sourcePath:'C:/group-files/canonical.pdf',fileSize:20,taskId:'canonical-task'},2);store.updateGroupFileJob('canonical','downloaded',{stage:'completed'},3);
+ await source.tick();const repeated=store.getGroupFileJob('new-job');assert.equal(repeated.stage,'completed');assert.equal(repeated.canonicalJobId,'canonical');assert.equal(repeated.taskId,'canonical-task');assert.deepEqual(calls,{download:1,upload:0,sign:0,submit:0,attach:0});
 });

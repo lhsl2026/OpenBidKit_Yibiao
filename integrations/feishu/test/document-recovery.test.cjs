@@ -4,7 +4,7 @@ const {createStore}=require('../store.cjs');const {createDocumentRecovery,create
 const bytes=Buffer.from('%PDF-1.7\npublic tender\n%%EOF'),sha256=createHash('sha256').update(bytes).digest('hex');
 const taskId='11111111-1111-1111-1111-111111111111',actionId='22222222-2222-2222-2222-222222222222';
 const sourceUrl='https://ggzy.guizhou.gov.cn/tradeInfo/detailHtml?metaId=123456';
-const project={officialUrl:sourceUrl,sourceMessageId:'om_daily'};const result={status:'triggered',taskId,acquisition:{status:'waiting_upload',errorCode:'complete_tender_document_missing',actionId}};
+const project={title:'A项目采购',officialUrl:sourceUrl,sourceMessageId:'om_daily'};const result={status:'triggered',taskId,acquisition:{status:'waiting_upload',errorCode:'complete_tender_document_missing',actionId}};
 const receipt={status:'processed',messageId:'om_daily',projects:[project],results:[result]};
 function setup(t,overrides={}){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'bid-doc-recovery-')),store=createStore(':memory:');t.after(()=>{store.close();fs.rmSync(root,{recursive:true,force:true});});
@@ -19,6 +19,9 @@ test('only real supported waiting-upload results queue; selection results use se
  assert.equal(recovery.queueReceipt({...receipt,projects:[{...project,officialUrl:'https://evil.example/file.pdf'}]}).length,0);
  const selected={...result,taskId:'33333333-3333-3333-3333-333333333333',acquisition:{...result.acquisition,actionId:'44444444-4444-4444-4444-444444444444'}};
  assert.equal(recovery.queueReceipt({status:'selection_processed',selection:{status:'processed',selectedProjects:[project],results:[selected]}}).length,1);assert.equal(recovery.list().length,2);
+});
+test('waiting candidates expose only safe task matching fields',t=>{
+ const {recovery}=setup(t);recovery.queueReceipt(receipt);assert.deepEqual(recovery.waitingCandidates(),[{taskId,manualActionId:actionId,title:'A项目采购',statusCardMessageId:null,sourceInboxId:null}]);
 });
 test('one phase per tick preserves checksum source and attaches once without persisting signed URL',async t=>{
  const {recovery,store,calls,make,body}=setup(t);recovery.queueReceipt(receipt);await recovery.tick();assert.equal(recovery.list()[0].stage,'downloaded');assert.equal(calls.upload,0);
