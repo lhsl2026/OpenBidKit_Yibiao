@@ -9,6 +9,7 @@ const { inspectBusinessTemplate } = require('./businessBidTemplate.cjs');
 function emptyState() {
   return { companyName: COMPANY, companyNames: [COMPANY, '贵州云界科创信息技术有限公司'], projectName: '', deadline: '', files: [], evidence: [], excludedEvidence: 0,
     analysis: null, analysisComplete: false, analysisConfirmed: false, analysisTask: null, analysisCoverage: null,
+    generationTask: null, generationComplete: false,
     fieldValues: {}, companyProfiles: {}, wordTemplate: null, textModelSelection: null, draft: null };
 }
 
@@ -31,7 +32,8 @@ function createBusinessBidStore({ app, db, fileService }) {
   });
   const save = (patch) => { updateBusinessBidWithoutReload(patch); return loadBusinessBid(); };
   function assertIdle() {
-    if (importing || ['running', 'pausing'].includes(loadBusinessBid().analysisTask?.status)) throw new Error('商务标正在处理文件或提取要求，请完成后再修改');
+    const state = loadBusinessBid();
+    if (importing || ['running', 'pausing'].includes(state.analysisTask?.status) || ['running', 'pausing'].includes(state.generationTask?.status)) throw new Error('商务标正在处理文件、提取要求或生成正文，请完成后再修改');
   }
   function asOf(state) {
     return [businessDate(), state.deadline || ''].sort().at(-1);
@@ -49,8 +51,13 @@ function createBusinessBidStore({ app, db, fileService }) {
       }
     }
   }
+  function verifyGenerationInputs(state = loadBusinessBid()) {
+    if (!state.analysisConfirmed || !state.analysisComplete || !state.analysis) throw new Error('请先完整提取并人工确认商务要求');
+    if (!state.textModelSelection) throw new Error('请先选择本商务标使用的模型');
+    verifySelected(state);
+  }
   return {
-    loadBusinessBid, updateBusinessBidWithoutReload, assertIdle,
+    loadBusinessBid, updateBusinessBidWithoutReload, assertIdle, verifyGenerationInputs,
     readSource(id) {
       const file = loadBusinessBid().files.find(item => item.id === id);
       if (!file) throw new Error('未找到招标原文');
@@ -80,7 +87,7 @@ function createBusinessBidStore({ app, db, fileService }) {
           files.push({ id, name: document.file_name, markdownPath, sha256, chars: document.file_content.length, parserLabel: document.parser_label });
         }
         const state = save({ files, analysis: null, analysisComplete: false, analysisConfirmed: false, analysisTask: null,
-          analysisCoverage: null, draft: null, fieldValues: {}, evidence: loadBusinessBid().evidence.map(item => ({ ...item, confirmed: false, requirementIds: [] })) });
+          analysisCoverage: null, generationTask: null, generationComplete: false, draft: null, fieldValues: {}, evidence: loadBusinessBid().evidence.map(item => ({ ...item, confirmed: false, requirementIds: [] })) });
         return { state, success: true, message: [result.message, ...(result.errors || [])].join('\n') };
       } finally { importing = false; }
     },
@@ -99,7 +106,7 @@ function createBusinessBidStore({ app, db, fileService }) {
           return { name: file.name, sha256: file.sha256, sourcePath: destination, valid: true };
         });
       }
-      return save({ evidence: result.items, excludedEvidence: result.excluded, draft: null });
+      return save({ evidence: result.items, excludedEvidence: result.excluded, draft: null, generationTask: null, generationComplete: false });
     },
     saveReview(payload) {
       assertIdle();
@@ -109,7 +116,7 @@ function createBusinessBidStore({ app, db, fileService }) {
         const companyName = payload.companyName.trim();
         if (companyName === state.companyName) return state;
         return save({ companyName, companyNames: [...new Set([...state.companyNames, companyName])],
-          evidence: [], excludedEvidence: 0, fieldValues: { ...state.companyProfiles[companyName] }, draft: null, analysisConfirmed: false });
+          evidence: [], excludedEvidence: 0, fieldValues: { ...state.companyProfiles[companyName] }, draft: null, generationTask: null, generationComplete: false, analysisConfirmed: false });
       }
       const patch = {};
       for (const key of ['projectName', 'deadline', 'textModelSelection']) if (Object.hasOwn(payload, key)) patch[key] = payload[key];
@@ -132,14 +139,14 @@ function createBusinessBidStore({ app, db, fileService }) {
       if (Object.hasOwn(payload, 'deadline') && payload.deadline !== state.deadline) {
         patch.evidence = (patch.evidence || state.evidence).map(item => ({ ...item, confirmed: false }));
       }
-      return save({ ...patch, draft: null });
+      return save({ ...patch, draft: null, generationTask: null, generationComplete: false });
     },
     generateDraft() {
       assertIdle();
       const state = loadBusinessBid();
       verifySelected(state);
       const draft = buildDraft(state);
-      return save({ draft });
+      return save({ draft, generationComplete: true });
     },
     importTemplate(filePath) {
       assertIdle();
@@ -151,12 +158,12 @@ function createBusinessBidStore({ app, db, fileService }) {
       fs.writeFileSync(templatePath, buffer);
       const state = loadBusinessBid();
       const fieldValues = Object.fromEntries(Object.entries(state.fieldValues).filter(([key]) => !key.startsWith('template:')));
-      return save({ wordTemplate: { name: path.basename(filePath), path: templatePath, sha256: hash(buffer), fields }, fieldValues, draft: null });
+      return save({ wordTemplate: { name: path.basename(filePath), path: templatePath, sha256: hash(buffer), fields }, fieldValues, draft: null, generationTask: null, generationComplete: false });
     },
     clearTemplate() {
       assertIdle();
       const fieldValues = Object.fromEntries(Object.entries(loadBusinessBid().fieldValues).filter(([key]) => !key.startsWith('template:')));
-      return save({ wordTemplate: null, fieldValues, draft: null });
+      return save({ wordTemplate: null, fieldValues, draft: null, generationTask: null, generationComplete: false });
     },
     getExportPayload(kind) {
       assertIdle();

@@ -18,6 +18,7 @@ export interface BusinessBidState {
   analysis: BusinessAnalysis | null; analysisComplete: boolean; analysisConfirmed: boolean;
   analysisCoverage: { completed: number; total: number } | null;
   analysisTask: TaskEventTask | null;
+  generationTask: TaskEventTask | null; generationComplete: boolean;
   fieldValues: Record<string, string>; textModelSelection: TextModelSelection | null;
   formPlan: {
     fields: { key: string; label: string; scope: 'fixed' | 'company' | 'project' | 'other' | 'manual'; value: string; readOnly: boolean; manualReason?: string; conflict: boolean; occurrences: number; source: string; targets: string[]; sections: string[] }[];
@@ -40,7 +41,7 @@ export interface BusinessBidBridge {
   importEvidence: () => Promise<BusinessBidState>;
   saveReview: (payload: BusinessBidReview) => Promise<BusinessBidState>;
   analyze: () => Promise<TaskEventTask>;
-  generate: () => Promise<BusinessBidState>;
+  generate: () => Promise<TaskEventTask>;
   clear: () => Promise<BusinessBidState>;
   importTemplate: () => Promise<BusinessBidState>;
   clearTemplate: () => Promise<BusinessBidState>;

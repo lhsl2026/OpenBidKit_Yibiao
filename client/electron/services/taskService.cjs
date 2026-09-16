@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const { runBusinessBidAnalysisTask } = require('./businessBidTask.cjs');
+const { runBusinessBidGenerationTask } = require('./businessBidGenerationTask.cjs');
 const { runBidSectionExtractionTask } = require('./bidSectionExtractionTask.cjs');
 const { runBidAnalysisTask } = require('./bidAnalysisTask.cjs');
 const { runContentGenerationTask } = require('./contentGenerationTask.cjs');
@@ -30,6 +31,10 @@ const taskDefinitions = {
   'business-bid-analysis': {
     label: '商务要求提取', group: 'business-bid', groupLabel: '商务标', step: 2,
     lockPolicy: 'group-exclusive', stateKey: 'businessBid', field: 'analysisTask',
+  },
+  'business-bid-generation': {
+    label: '商务标正文生成', group: 'business-bid', groupLabel: '商务标', step: 5,
+    lockPolicy: 'group-exclusive', stateKey: 'businessBid', field: 'generationTask',
   },
   'bid-section-extraction': {
     label: '多标段识别',
@@ -1378,10 +1383,16 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
   }
 
   const technicalPlanRecoveryState = technicalPlanStore.loadTechnicalPlan() || {};
-  const interruptedBusinessTask = businessBidStore?.loadBusinessBid().analysisTask;
+  const businessRecoveryState = businessBidStore?.loadBusinessBid() || {};
+  const interruptedBusinessTask = businessRecoveryState.analysisTask;
   if (interruptedBusinessTask && isActiveTaskStatus(interruptedBusinessTask.status)) {
     businessBidStore.updateBusinessBidWithoutReload({ analysisComplete: false, analysisConfirmed: false, draft: null,
       analysisTask: { ...interruptedBusinessTask, status: 'error', error: '应用退出导致商务提取中断，请重新提取并复核', updated_at: now() } });
+  }
+  const interruptedBusinessGeneration = businessRecoveryState.generationTask;
+  if (interruptedBusinessGeneration && isActiveTaskStatus(interruptedBusinessGeneration.status)) {
+    businessBidStore.updateBusinessBidWithoutReload({ generationComplete: false,
+      generationTask: { ...interruptedBusinessGeneration, status: 'error', error: '应用退出导致商务标正文生成中断，请重新生成；上一次成功草稿仍保留', updated_at: now() } });
   }
   const rejectionCheckRecoveryState = rejectionCheckStore.loadRejectionCheck() || {};
   const duplicateCheckRecoveryState = duplicateCheckStore.loadDuplicateCheck() || {};
@@ -1408,8 +1419,14 @@ function createTaskService({ aiService, agentService, autoConfirmationService, t
       for (const file of state.files) businessBidStore.readSource(file.id);
       return startManagedTask('business-bid-analysis', {}, runBusinessBidAnalysisTask, {
         analysis: null, analysisComplete: false, analysisConfirmed: false, analysisCoverage: null,
-        draft: null, fieldValues: {}, evidence: state.evidence.map(item => ({ ...item, confirmed: false, requirementIds: [] })),
+        generationTask: null, generationComplete: false, draft: null, fieldValues: {}, evidence: state.evidence.map(item => ({ ...item, confirmed: false, requirementIds: [] })),
       });
+    },
+    startBusinessBidGeneration() {
+      businessBidStore.assertIdle();
+      const state = businessBidStore.loadBusinessBid();
+      businessBidStore.verifyGenerationInputs(state);
+      return startManagedTask('business-bid-generation', {}, runBusinessBidGenerationTask, { generationComplete: false });
     },
     startBidSectionExtraction(payload) {
       return startManagedTask('bid-section-extraction', payload, runBidSectionExtractionTask, {

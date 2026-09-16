@@ -23,7 +23,7 @@ function BusinessBidPage() {
   const [exportMessage, setExportMessage] = useState('');
   const exportId = useRef('');
   const [exportPath, setExportPath] = useState('');
-  const busy = Boolean(operation) || state?.analysisTask?.status === 'running';
+  const busy = Boolean(operation) || ['running', 'pausing'].includes(state?.analysisTask?.status || '') || ['running', 'pausing'].includes(state?.generationTask?.status || '');
   const selectedModelId = state?.textModelSelection ? `${state.textModelSelection.provider}:${state.textModelSelection.modelName}` : '';
   const bridge = window.yibiao?.businessBid;
   const fieldPlaceholder = (field: BusinessBidState['formPlan']['fields'][number]) => field.manualReason || (field.readOnly ? '需人工在导出文档中填写' : '待核实');
@@ -44,7 +44,7 @@ function BusinessBidPage() {
         setState(next); resetForm(next);
         unsubscribe = window.yibiao.tasks.onTaskEvent(event => {
           if (event.businessBidPatch && mounted) setState(current => current ? { ...current, ...event.businessBidPatch } : current);
-          if (event.task.type === 'business-bid-analysis' && event.task.status === 'success') void bridge.load().then(result => { if (mounted) { setState(result); resetForm(result); } });
+          if (['business-bid-analysis', 'business-bid-generation'].includes(event.task.type) && event.task.status === 'success') void bridge.load().then(result => { if (mounted) { setState(result); resetForm(result); } });
         });
         await window.yibiao.tasks.getActiveTasks();
         const available = await window.yibiao.config.listSelectableTextModels();
@@ -93,10 +93,10 @@ function BusinessBidPage() {
   if (!state) return <div className="business-bid-page"><section className="panel"><h2>商务标</h2><p>{loadError || '正在读取商务标工作区…'}</p></section></div>;
   return <div className="business-bid-page">
     <header className="business-bid-header">
-      <div><span className="section-kicker">商务标 · 第一版</span><h2>商务标编制工作台</h2><p>核对要求，确认材料，再生成可复核的商务标草稿。</p></div>
+      <div><span className="section-kicker">商务标 · 专业生成</span><h2>商务标编制工作台</h2><p>按招标结构生成完整正文，并逐条审校资格、商务条款和废标风险。</p></div>
       <button className="text-button" disabled={busy} onClick={() => setResetOpen(true)}>开始新项目</button>
     </header>
-    <p className="business-bid-notice">公司主体：<strong>{state.companyName}</strong>。缺项保留“待核实”；报价、签章及投标提交由人工完成。</p>
+    <p className="business-bid-notice">公司主体：<strong>{state.companyName}</strong>。缺失事实只在对应位置保留精确待补项；报价、签章及投标提交由人工完成。</p>
     <section className="panel business-bid-section" aria-label="选择公司主体">
       <h3>公司主体</h3>
       <label className="business-bid-model">本次投标公司<select aria-label="公司主体" disabled={busy} value={state.companyName} onChange={event => setPendingCompany(event.target.value)}>
@@ -138,7 +138,7 @@ function BusinessBidPage() {
         {!state.analysis![group].length && <p>待核实：没有提取到条目，请核对是否漏提。</p>}
         {state.analysis![group].map(item => <article key={item.id}><strong>{item.title}</strong><small>{item.section} · {item.sourceName} · 第 {item.segment} 段</small><blockquote>{item.quote}</blockquote></article>)}
       </details>)}
-      <label className="business-bid-check"><input type="checkbox" disabled={busy || !state.analysisComplete} checked={state.analysisConfirmed} onChange={event => void run('保存要求确认', () => review({ analysisConfirmed: event.target.checked }))} />我已核对提取结果与原文，接受保留缺项为“待核实”</label>
+      <label className="business-bid-check"><input type="checkbox" disabled={busy || !state.analysisComplete} checked={state.analysisConfirmed} onChange={event => void run('保存要求确认', () => review({ analysisConfirmed: event.target.checked }))} />我已核对提取结果与原文，同意据此生成商务标正文</label>
       {state.analysis && !state.analysisComplete && <p role="alert">提取尚未完成，部分结果不能作为完整商务要求。</p>}
     </section>
     <section className="panel business-bid-section">
@@ -165,8 +165,9 @@ function BusinessBidPage() {
       </details>)}</div>
     </section>
     <section className="panel business-bid-section">
-      <div className="business-bid-section-head"><h3>5. 商务标草稿与待补清单</h3><button className="primary-action" disabled={busy || dirty || !state.analysisConfirmed} onClick={() => void run('生成商务标草稿', async () => { setState(await bridge!.generate()); setExportPath(''); showToast('草稿已生成，请核对待补资料和招标格式', 'success'); })}>生成商务标草稿</button></div>
-      <p className="business-bid-muted">包含投标函、身份证明、授权书、资格资料、资质人员业绩索引、偏离表、政策声明和报价表结构。证明原件/扫描件须人工装订，表单版式须与招标原件核对。</p>{state.wordTemplate && <p className="business-bid-muted">按 Word 模板导出仅包含模板自身内容和版式，仍须结合待补清单人工核查，不能视为整本商务标已齐全。</p>}
+      <div className="business-bid-section-head"><h3>5. 专业商务标正文与待补清单</h3><button className="primary-action" disabled={busy || dirty || !state.analysisConfirmed || !state.textModelSelection} onClick={() => void run('启动商务标正文生成', async () => { await bridge!.generate(); setExportPath(''); showToast('已开始按招标结构生成正文，可离开页面后台继续', 'info'); })}>{state.draft ? '重新生成专业商务标' : '生成专业商务标'}</button></div>
+      <p className="business-bid-muted">系统按目录、资格审查、商务条款、表单和废标项分段生成完整正文，再补齐逐条响应矩阵与证据附件索引。只在缺少真实资料的位置保留精确待补项。</p>{state.wordTemplate && <p className="business-bid-muted">招标方提供原始 Word 格式时优先按模板导出；整本 DOCX 用于补充模板未覆盖的章节和审校表。</p>}
+      {state.generationTask && <div className="business-bid-task" role="status"><progress max="100" value={state.generationTask.progress} /><span>{state.generationTask.progress}% · {state.generationTask.error || state.generationTask.logs?.at(-1)}</span></div>}
       {state.draft && <><p>{state.draft.sections.length} 个章节 · {state.draft.pending.length} 项待补 / 待核实</p>
         <div className="business-bid-actions">{state.wordTemplate && <button className="secondary-action" disabled={busy || dirty} onClick={() => void exportDraft('template')}>按 Word 模板导出</button>}<button className="secondary-action" disabled={busy || dirty} onClick={() => void exportDraft('full')}>导出整本 DOCX</button><button className="secondary-action" disabled={busy || dirty} onClick={() => void exportDraft('pending')}>导出待补清单 DOCX</button>{exportPath && <button className="text-button" onClick={() => void run('打开导出文件', async () => { await window.yibiao.export.openFile(exportPath); })}>打开导出文件</button>}</div>
         {exportMessage && <p role="status">{exportMessage}</p>}

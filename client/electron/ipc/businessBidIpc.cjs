@@ -15,7 +15,7 @@ function registerBusinessBidIpc({ businessBidStore, taskService, exportService }
   });
   ipcMain.handle('business-bid:clear-template', () => businessBidStore.clearTemplate());
   ipcMain.handle('business-bid:analyze', () => taskService.startBusinessBidAnalysis());
-  ipcMain.handle('business-bid:generate', () => businessBidStore.generateDraft());
+  ipcMain.handle('business-bid:generate', () => taskService.startBusinessBidGeneration());
   ipcMain.handle('business-bid:clear', () => businessBidStore.clear());
   ipcMain.handle('business-bid:export', async (event, { kind, requestId }) => {
     const progress = (value) => { if (!event.sender.isDestroyed()) event.sender.send('export:word-progress', { requestId, ...value }); };
