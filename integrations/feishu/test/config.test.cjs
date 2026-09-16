@@ -5,6 +5,7 @@ function productionEnv(overrides={}){
   BID_PRODUCTION_CHAT_ID:'oc_production',BID_PRODUCTION_CHAT_IDS:'oc_production',BID_COMPANY_ID:'隆创信息有限公司',
   LARK_APP_ID:'cli_app',LARK_APP_SECRET:'test-secret',BID_OPERATOR_IDS:'ou_operator',BID_SOURCE_CHAT_IDS:'oc_radar',BID_SOURCE_SENDER_IDS:'ou_radar_bot',
   BID_RADAR_POLL_ENABLED:'true',BID_CARD_SOURCE_ENABLED:'true',BID_LARK_CLI_PATH:process.execPath,BID_LARK_CLI_PROFILE:'radar-user',BID_CARD_CLI_PROFILE:'bid-bot',
+  BID_GROUP_FILE_SOURCE_ENABLED:'true',BID_GROUP_FILE_CLI_PROFILE:'decision-user',BID_GROUP_FILE_START_AT:'2026-09-16T00:00:00+08:00',BID_MIAODA_APP_ID:'app_17agc8m97f2',
   BID_REPORT_ARCHIVE_ENABLED:'true',BID_REPORT_FOLDER_TOKEN:'folder-production',BID_REPORT_ALLOWED_FOLDER_TOKENS:'folder-production',BID_REPORT_CLI_PROFILE:'report-user',BID_REPORT_CLI_IDENTITY:'user',
   BID_COMPANY_PROFILE_SYNC_ENABLED:'true',BID_VAULT_DATABASE:'C:/vault/vault.sqlite3',BID_VAULT_FILES:'C:/vault',BID_VAULT_MAPPINGS:'C:/vault/mappings.json',
   PREREAD_BASE_URL:'http://127.0.0.1:3000',PREREAD_RELAY_AUTHORIZATION:'Bearer relay',
@@ -35,6 +36,12 @@ test('official document recovery is opt-in and pinned to the authorized Miaoda a
  for(const changed of [{BID_MIAODA_APP_ID:'app_other'},{BID_DOCUMENT_CLI_PROFILE:''},{PREREAD_RELAY_AUTHORIZATION:''}])assert.throws(()=>loadConfig({...env,...changed}),/document_recovery_not_configured/);
  assert.equal(loadConfig({}).documentRecovery.enabled,false);
 });
+test('formal group file source is opt-in with a bounded file contract',()=>{
+ const disabled=loadConfig({});assert.equal(disabled.groupFileSource.enabled,false);assert.equal(disabled.groupFileSource.maxBytes,31457280);assert.deepEqual(disabled.groupFileSource.allowedExtensions,['pdf','doc','docx']);
+ const env={BID_GROUP_FILE_SOURCE_ENABLED:'true',BID_GROUP_FILE_CLI_PROFILE:'decision-user',BID_GROUP_FILE_START_AT:'2026-09-16T00:00:00+08:00',BID_LARK_CLI_PATH:process.execPath,BID_CHAT_ID:'oc_target',BID_COMPANY_ID:'隆创信息有限公司',BID_MIAODA_APP_ID:'app_17agc8m97f2',PREREAD_BASE_URL:'http://127.0.0.1:3000',PREREAD_RELAY_AUTHORIZATION:'Bearer relay'};
+ const config=loadConfig(env);assert.equal(config.groupFileSource.profile,'decision-user');assert.equal(config.groupFileSource.startAt,env.BID_GROUP_FILE_START_AT);assert.equal(config.groupFileSource.root,require('node:path').join(config.dataRoot,'group-files'));
+ for(const changed of [{BID_GROUP_FILE_CLI_PROFILE:''},{BID_GROUP_FILE_START_AT:'invalid'},{BID_LARK_CLI_PATH:'lark-cli'},{BID_CHAT_ID:''},{BID_COMPANY_ID:'其他公司'},{BID_MIAODA_APP_ID:'app_other'},{PREREAD_RELAY_AUTHORIZATION:''},{BID_GROUP_FILE_MAX_BYTES:'31457281'},{BID_GROUP_FILE_ALLOWED_EXTENSIONS:'pdf,zip'}])assert.throws(()=>loadConfig({...env,...changed}),/group_file_source_not_configured/);
+});
 test('company profile synchronization is opt-in and pinned to the exact legal entity',()=>{
  const env={BID_COMPANY_PROFILE_SYNC_ENABLED:'true',BID_COMPANY_ID:'隆创信息有限公司',BID_VAULT_DATABASE:'C:/vault/vault.sqlite3',BID_VAULT_FILES:'C:/vault',BID_VAULT_MAPPINGS:'C:/vault/mappings.json',PREREAD_BASE_URL:'http://127.0.0.1:3000',PREREAD_RELAY_AUTHORIZATION:'Bearer relay'};
  const config=loadConfig(env);assert.equal(config.companyEvidence.enabled,true);
@@ -57,6 +64,7 @@ test('production and test targets cannot overlap or activate without an explicit
   {BID_PRODUCTION_CHAT_IDS:'oc_production,oc_test'},
   {BID_CARD_SOURCE_ENABLED:'false'},
   {BID_RADAR_POLL_ENABLED:'false'},
+  {BID_GROUP_FILE_SOURCE_ENABLED:'false'},
   {BID_REPORT_ARCHIVE_ENABLED:'false'},
   {BID_COMPANY_PROFILE_SYNC_ENABLED:'false'},
  ]) assert.throws(()=>loadConfig(productionEnv(changed)),/production/);

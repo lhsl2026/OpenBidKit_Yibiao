@@ -29,6 +29,9 @@ function loadConfig(env=process.env){
  config.cardSource={enabled:env.BID_CARD_SOURCE_ENABLED==='true',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_CARD_CLI_PROFILE||''};
  if(config.cardSource.enabled&&(!path.isAbsolute(config.cardSource.cliPath)||!config.cardSource.profile.trim()||!config.chatId||!config.operatorIds.length))throw Error('card_source_not_configured');
  config.documentRecovery={enabled:env.BID_DOCUMENT_RECOVERY_ENABLED==='true',appId:env.BID_MIAODA_APP_ID||'',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_DOCUMENT_CLI_PROFILE||'',root:path.join(config.writingRoot,'sources')};
+ const groupFileExtensions=list(env.BID_GROUP_FILE_ALLOWED_EXTENSIONS||'pdf,doc,docx').map(value=>value.toLowerCase());
+ config.groupFileSource={enabled:env.BID_GROUP_FILE_SOURCE_ENABLED==='true',appId:env.BID_MIAODA_APP_ID||'',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_GROUP_FILE_CLI_PROFILE||'',startAt:env.BID_GROUP_FILE_START_AT||'',maxBytes:Number(env.BID_GROUP_FILE_MAX_BYTES||30*1024*1024),allowedExtensions:groupFileExtensions,root:path.join(dataRoot,'group-files')};
+ if(config.groupFileSource.enabled){const g=config.groupFileSource;if(!path.isAbsolute(g.cliPath)||!g.profile.trim()||!g.startAt||!Number.isFinite(Date.parse(g.startAt))||!Number.isInteger(g.maxBytes)||g.maxBytes<1||g.maxBytes>30*1024*1024||!g.allowedExtensions.length||g.allowedExtensions.some(value=>!['pdf','doc','docx'].includes(value))||new Set(g.allowedExtensions).size!==g.allowedExtensions.length||!config.chatId||config.companyId!=='隆创信息有限公司'||g.appId!=='app_17agc8m97f2'||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer '))throw Error('group_file_source_not_configured');}
  config.reportArchive={enabled:env.BID_REPORT_ARCHIVE_ENABLED==='true',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_REPORT_CLI_PROFILE||'',identity:env.BID_REPORT_CLI_IDENTITY||'',folderToken:env.BID_REPORT_FOLDER_TOKEN||'',allowedFolderTokens:list(env.BID_REPORT_ALLOWED_FOLDER_TOKENS),root:path.join(dataRoot,'reports')};
  config.companyEvidence={enabled:env.BID_COMPANY_PROFILE_SYNC_ENABLED==='true'};
  if(config.companyEvidence.enabled&&(config.companyId!=='隆创信息有限公司'||!path.isAbsolute(config.databasePath)||!path.isAbsolute(config.filesRoot)||!path.isAbsolute(config.mappingsPath)||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer ')))throw Error('company_profile_sync_not_configured');
@@ -57,6 +60,7 @@ function loadConfig(env=process.env){
   if(!config.appId||!config.appSecret)missing.push('app');
   if(!config.operatorIds.length)missing.push('operators');
   if(!config.sourceChats.length||!config.sourceSenders.length||!config.radarPolling.enabled)missing.push('radar');
+  if(!config.groupFileSource.enabled)missing.push('group_file_source');
   if(!config.cardSource.enabled)missing.push('card_callback');
   if(!config.reportArchive.enabled)missing.push('report_archive');
   if(!config.companyEvidence.enabled)missing.push('company_evidence');
