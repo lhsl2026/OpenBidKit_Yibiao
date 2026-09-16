@@ -45,6 +45,12 @@ test('history messages accept only supported files from human members of the act
  const args=historyArguments({chatId:'decision',start:0,end:1000,profile:'decision-user'});assert.equal(args[args.indexOf('--as')+1],'user');assert.equal(args[args.indexOf('--profile')+1],'decision-user');assert.equal(args[args.indexOf('--chat-id')+1],'decision');
 });
 
+test('history messages accept the XML file descriptor returned by the real CLI',()=>{
+ const event=normalizeFileMessage({...historyMessage,content:'<file key="file_v3_example-key" name="采购文件.pdf"/>'},sourceConfig);
+ assert.equal(event.fileName,'采购文件.pdf');
+ assert.equal(event.fileKey,'file_v3_example-key');
+});
+
 test('history polling persists a fixed paginated window and never advances on failure',async t=>{
  const store=createStore(':memory:');t.after(()=>store.close());let now=Date.parse('2026-09-16T10:00:00+08:00'),page=0;
  const source=createGroupFileSource({store,config:sourceConfig,clock:()=>now,fetchPage:async()=>({ok:true,data:{messages:[{...historyMessage,message_id:'om_'+(++page)}],has_more:page===1,page_token:page===1?'next':''}})});

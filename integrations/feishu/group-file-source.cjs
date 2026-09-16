@@ -22,6 +22,8 @@ function parseFileDescriptor(content){
   if(typeof fileKey==='string'&&typeof fileName==='string'&&fileKey.trim()&&fileName.trim())return {fileKey:fileKey.trim(),fileName:fileName.trim()};
  }
  if(typeof content!=='string')return null;
+ const xml=/^\s*<file\s+([^>]*)\/?>(?:\s*)$/iu.exec(content),attribute=(source,name)=>new RegExp('(?:^|\\s)'+name+'="([^"]+)"','iu').exec(source)?.[1];
+ if(xml){const fileKey=attribute(xml[1],'key'),fileName=attribute(xml[1],'name');if(fileKey&&fileName)return {fileKey,fileName};}
  const match=/\[File:\s*([^\]]+)\]\((file_[A-Za-z0-9_-]+)\)/u.exec(content);
  return match?{fileName:match[1].trim(),fileKey:match[2]}:null;
 }
