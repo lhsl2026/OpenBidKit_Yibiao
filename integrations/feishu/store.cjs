@@ -18,10 +18,22 @@ function createStore(file) {
     CREATE TABLE IF NOT EXISTS file_outbox(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,file_key TEXT,message_id TEXT,first_attempt INTEGER,attempts INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,delivered INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS leases(name TEXT PRIMARY KEY,owner TEXT NOT NULL,expires INTEGER NOT NULL);`);
   db.exec(`CREATE TABLE IF NOT EXISTS card_streams(id TEXT PRIMARY KEY,task TEXT NOT NULL,company TEXT NOT NULL,chat TEXT NOT NULL,create_id TEXT NOT NULL,message_id TEXT,first_attempt INTEGER);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS group_file_jobs(
+    id TEXT PRIMARY KEY,company_id TEXT NOT NULL,chat_id TEXT NOT NULL,source_message_id TEXT NOT NULL,sender_id TEXT NOT NULL,create_time TEXT NOT NULL,
+    file_name TEXT NOT NULL,file_key TEXT NOT NULL,reply_to TEXT,stage TEXT NOT NULL,file_size INTEGER,sha256 TEXT,source_path TEXT,remote_path TEXT,
+    task_id TEXT,manual_action_id TEXT,match_mode TEXT,canonical_job_id TEXT,candidates TEXT,receipt TEXT,error_code TEXT,next_at INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,status_message_id TEXT,status_create_id TEXT NOT NULL,status_revision INTEGER NOT NULL DEFAULT 1,
+    generation INTEGER NOT NULL DEFAULT 1,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+    UNIQUE(chat_id,source_message_id),UNIQUE(company_id,sha256,generation));
+    CREATE TABLE IF NOT EXISTS group_file_status_outbox(
+    id TEXT PRIMARY KEY,job_id TEXT NOT NULL,revision INTEGER NOT NULL,card TEXT NOT NULL,first_attempt INTEGER,attempts INTEGER NOT NULL DEFAULT 0,
+    next_at INTEGER NOT NULL DEFAULT 0,delivered INTEGER NOT NULL DEFAULT 0,last_error TEXT,UNIQUE(job_id,revision));`);
   const project=row=>row?{id:row.id,taskId:row.task,companyId:row.company,version:row.version,checksum:row.checksum,generatedAt:row.generated,current:Boolean(row.current),input:JSON.parse(row.payload),assessment:JSON.parse(row.assessment),humanDecision:row.human_decision,owner:row.owner,messageId:row.message_id,revision:row.revision,created:row.created,updated:row.updated}:null;
+  const groupFile=row=>row?{id:row.id,companyId:row.company_id,chatId:row.chat_id,messageId:row.source_message_id,senderId:row.sender_id,createTime:row.create_time,fileName:row.file_name,fileKey:row.file_key,replyTo:row.reply_to,stage:row.stage,fileSize:row.file_size,sha256:row.sha256,sourcePath:row.source_path,remotePath:row.remote_path,taskId:row.task_id,manualActionId:row.manual_action_id,matchMode:row.match_mode,canonicalJobId:row.canonical_job_id,candidates:row.candidates?JSON.parse(row.candidates):null,receipt:row.receipt?JSON.parse(row.receipt):null,errorCode:row.error_code,nextAt:row.next_at,attempts:row.attempts,statusMessageId:row.status_message_id,statusCreateId:row.status_create_id,statusRevision:row.status_revision,generation:row.generation,createdAt:row.created_at,updatedAt:row.updated_at}:null;
+  const getGroupFileJob=id=>groupFile(db.prepare('SELECT * FROM group_file_jobs WHERE id=?').get(id));
   const getProject=id=>project(db.prepare('SELECT * FROM projects WHERE id=?').get(id));
   const enqueue=p=>db.prepare('INSERT OR IGNORE INTO outbox(id,project_id,revision) VALUES(?,?,?)').run(key('card',p.id,p.revision),p.id,p.revision);
-  return {db,key,close:()=>db.close(),getProject,
+  return {db,key,close:()=>db.close(),getProject,getGroupFileJob,
     transaction(fn){db.exec('BEGIN IMMEDIATE');try{const out=fn();db.exec('COMMIT');return out;}catch(e){db.exec('ROLLBACK');throw e;}},
     current:(task,company)=>project(db.prepare('SELECT * FROM projects WHERE task=? AND company=? AND current=1').get(task,company)),
     listProjects:()=>db.prepare('SELECT * FROM projects WHERE current=1 ORDER BY updated DESC').all().map(project),
@@ -69,6 +81,37 @@ function createStore(file) {
     listInbox(now){return db.prepare('SELECT * FROM inbox WHERE delivered=0 AND next_at<=? LIMIT 20').all(now).map(r=>({...r,payload:JSON.parse(r.payload)}));},
     finishInbox(id){db.prepare('UPDATE inbox SET delivered=1 WHERE id=?').run(id);},
     retryInbox(id,now){db.prepare('UPDATE inbox SET next_at=? WHERE id=?').run(now+60000,id);},
+    receiveGroupFile(input,now){
+      const existing=db.prepare('SELECT * FROM group_file_jobs WHERE chat_id=? AND source_message_id=?').get(input.chatId,input.messageId);
+      if(existing){const saved=groupFile(existing);if(['id','companyId','senderId','createTime','fileName','fileKey','replyTo'].some(name=>(saved[name]??null)!==(input[name]??null)))throw Error('group_file_conflict');return saved;}
+      db.prepare(`INSERT INTO group_file_jobs(id,company_id,chat_id,source_message_id,sender_id,create_time,file_name,file_key,reply_to,stage,status_create_id,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,'discovered',?,?,?)`).run(input.id,input.companyId,input.chatId,input.messageId,input.senderId,input.createTime,input.fileName,input.fileKey,input.replyTo??null,key('group-file-status-create',input.id),now,now);
+      return getGroupFileJob(input.id);
+    },
+    listGroupFileJobs(now){return db.prepare("SELECT * FROM group_file_jobs WHERE stage NOT IN ('completed','failed','manual_review') AND next_at<=? ORDER BY created_at LIMIT 20").all(now).map(groupFile);},
+    findGroupFileByHash(companyId,sha256){return groupFile(db.prepare('SELECT * FROM group_file_jobs WHERE company_id=? AND sha256=? ORDER BY generation,created_at LIMIT 1').get(companyId,sha256));},
+    updateGroupFileJob(id,expectedStage,patch,now){
+      const columns={stage:'stage',fileSize:'file_size',sha256:'sha256',sourcePath:'source_path',remotePath:'remote_path',taskId:'task_id',manualActionId:'manual_action_id',matchMode:'match_mode',canonicalJobId:'canonical_job_id',candidates:'candidates',receipt:'receipt',errorCode:'error_code',nextAt:'next_at',attempts:'attempts',statusMessageId:'status_message_id',statusRevision:'status_revision',generation:'generation'};
+      const entries=Object.entries(patch).filter(([name,value])=>columns[name]&&value!==undefined);if(!entries.length)throw Error('group_file_patch_empty');
+      const values=entries.map(([name,value])=>['candidates','receipt'].includes(name)&&value!==null?JSON.stringify(value):value);
+      const result=db.prepare(`UPDATE group_file_jobs SET ${entries.map(([name])=>columns[name]+'=?').join(',')},updated_at=? WHERE id=? AND stage=?`).run(...values,now,id,expectedStage);
+      if(result.changes!==1)throw Error('group_file_stage_conflict');return getGroupFileJob(id);
+    },
+    enqueueGroupFileStatus(id,card,now){
+      const job=getGroupFileJob(id);if(!job)throw Error('group_file_missing');const serialized=JSON.stringify(card);
+      const latest=db.prepare('SELECT * FROM group_file_status_outbox WHERE job_id=? ORDER BY revision DESC LIMIT 1').get(id);
+      if(latest?.card===serialized)return {...latest,card:JSON.parse(latest.card)};
+      const revision=latest?job.statusRevision+1:job.statusRevision,rowId=key('group-file-status',id,revision);
+      db.prepare('UPDATE group_file_jobs SET status_revision=?,updated_at=? WHERE id=?').run(revision,now,id);
+      db.prepare('INSERT INTO group_file_status_outbox(id,job_id,revision,card) VALUES(?,?,?,?)').run(rowId,id,revision,serialized);
+      return {...db.prepare('SELECT * FROM group_file_status_outbox WHERE id=?').get(rowId),card};
+    },
+    listGroupFileStatus(now){return db.prepare('SELECT * FROM group_file_status_outbox WHERE delivered=0 AND next_at<=? ORDER BY rowid LIMIT 20').all(now).map(row=>({...row,card:JSON.parse(row.card)}));},
+    attemptGroupFileStatus(id,now){db.prepare('UPDATE group_file_status_outbox SET first_attempt=COALESCE(first_attempt,?) WHERE id=?').run(now,id);},
+    bindGroupFileStatus(jobId,messageId){db.prepare('UPDATE group_file_jobs SET status_message_id=? WHERE id=?').run(messageId,jobId);},
+    finishGroupFileStatus(id){db.prepare('UPDATE group_file_status_outbox SET delivered=1 WHERE id=?').run(id);},
+    retryGroupFileStatus(id,now,error='group_file_status_delivery_failed'){db.prepare('UPDATE group_file_status_outbox SET attempts=attempts+1,next_at=?,last_error=? WHERE id=?').run(now+60000,error,id);},
+    manualGroupFileStatus(id){db.prepare("UPDATE group_file_status_outbox SET delivered=-1,last_error='group_file_status_delivery_unknown' WHERE id=?").run(id);},
     enqueueFile(projectId,file,sha256,epoch){const id=epoch?key('file',projectId,file,sha256,epoch):key('file',projectId,file,sha256);db.prepare('INSERT OR IGNORE INTO file_outbox(id,project_id,path,sha256) VALUES(?,?,?,?)').run(id,projectId,file,sha256);return id;},
     listFiles(now){return db.prepare('SELECT * FROM file_outbox WHERE delivered=0 AND next_at<=? ORDER BY rowid LIMIT 20').all(now);},
     getFile(id){return db.prepare('SELECT * FROM file_outbox WHERE id=?').get(id);},
