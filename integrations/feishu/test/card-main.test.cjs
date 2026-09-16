@@ -34,3 +34,9 @@ test('recovered local source binds to matching handoff digest and a mismatch sta
  const changed={...handoff,snapshot:{...handoff.snapshot,documentVersion:'v2',reportId:'r2',checksum:'b'.repeat(64),generatedAt:'2026-09-10T00:00:00Z'},latestDocumentVersion:'v2'};
  const p2=app.workflow.ingest({companyId:'company',handoff:changed});assert.equal(p2.input.sourcePath,undefined);assert.ok(p2.input.handoff.warnings.some(w=>w.code==='source_checksum_mismatch'&&w.blocked));assert.ok(app.workflow.revalidate(p2.id).input.handoff.warnings.some(w=>w.code==='source_checksum_mismatch'));
 });
+test('application routes group file choices and reports stale source readiness without private identifiers',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'bid-group-file-main-'));const config={...loadConfig({BID_DATA_ROOT:dir,BID_CHAT_ID:'oc_test',BID_OPERATOR_IDS:'ou_actor'}),port:0};config.groupFileSource={enabled:true};let action,sourceState={enabled:true,lastSuccessAt:null,error:null};
+ const app=createApplication(config,{readEvidence:async()=>({snapshot:{records:[],warnings:[]},rules:[]}),groupFileSourceFactory:()=>({poll:async()=>{},tick:async()=>{},select:async(value,event)=>{action={value,event};return {status:'selected'};},status:()=>sourceState}),cardSourceFactory:({onAction})=>({start(){},close:async()=>{},status:()=>({ready:false}),act:onAction})});t.after(async()=>{await app.close();fs.rmSync(dir,{recursive:true,force:true});});
+ assert.equal(app.readiness().missing.includes('group_file_source'),true);sourceState={enabled:true,lastSuccessAt:Date.now(),error:null};assert.equal(app.readiness().missing.includes('group_file_source'),false);
+ const result=await app.cardSource.act({agent:'openbidkit-group-file',action:'select_task',jobId:'job',taskId:'task',revision:1},{eventId:'event'});assert.deepEqual(result,{status:'selected'});assert.equal(action.value.jobId,'job');assert.equal(JSON.stringify(app.readiness()).includes('oc_test'),false);
+});

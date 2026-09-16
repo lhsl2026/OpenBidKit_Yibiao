@@ -1,12 +1,12 @@
 const { randomUUID } = require('node:crypto');
 const { key } = require('./store.cjs');
-const { deliverOutbox } = require('./lark.cjs');
+const { deliverGroupFileStatus, deliverOutbox } = require('./lark.cjs');
 const { buildSummary } = require('./card.cjs');
 const { enqueueArtifacts, deliverFiles } = require('./files.cjs');
 const { recordReceipt, inspectReceipt, isSourceInboxActive } = require('./receipt.cjs');
 const { normalizeRadarContent } = require('./preread.cjs');
 
-function createRunner({ store, config, workflow, preread, lark, write, onReceipt, onSourceEdited, onTick, clock = Date.now }) {
+function createRunner({ store, config, workflow, preread, lark, write, onReceipt, onSourceEdited, onTick, groupFileSource, clock = Date.now }) {
   const owner = randomUUID(), controller = new AbortController();
   let running = false, acquired = false, lost = false, closing = false, renewal;
   const radarSource = require('./radar-source.cjs').createRadarSource({store,config,receive:receiveRadar,clock,assertOwnership,signal:controller.signal});
@@ -92,6 +92,7 @@ function createRunner({ store, config, workflow, preread, lark, write, onReceipt
       assertOwnership();
       await radarSource.poll();
       assertOwnership();
+      if(groupFileSource){await groupFileSource.poll();assertOwnership();await groupFileSource.tick({signal:controller.signal});assertOwnership();}
       if (preread) {
         for (const row of store.listInbox(clock())) {
           try {
@@ -139,6 +140,7 @@ function createRunner({ store, config, workflow, preread, lark, write, onReceipt
       if (local.getUTCHours() >= config.summaryHour) store.enqueueSummary(day, buildSummary(day, store.listProjects(), store.countPendingWatches(config.companyId)));
       if (lark) {
         const args = { store, client: lark, mode: config.mode, chatId: config.chatId, allowedChats: config.allowedChats, clock, assertOwnership, revalidate };
+        if(groupFileSource)await deliverGroupFileStatus(args);
         if (config.writingRoot) await deliverFiles({ ...args, root: config.writingRoot });
         await deliverOutbox(args);
       }

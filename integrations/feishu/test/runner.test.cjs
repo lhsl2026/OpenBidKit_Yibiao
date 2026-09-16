@@ -60,3 +60,9 @@ test('editing during handoff await prevents stale ingest and watch resurrection'
  const ticking=runner.tick();await new Promise(setImmediate);runner.receiveRadar({...original,eventId:'two',content:'edited'});resolveHandoff({schemaVersion:'1.0'});await ticking;
  assert.equal(ingested,0);assert.equal(store.getWatch('task'),null);await runner.close();store.close();
 });
+test('formal group file polling and advancement run only while the runner lease is owned',async t=>{
+ const store=createStore(':memory:');const calls=[];const groupFileSource={poll:async()=>{calls.push('poll');},tick:async()=>{calls.push('tick');}};
+ const runner=createRunner({store,config:{companyId:'company',sourceChats:[],sourceSenders:[],mode:'disabled',summaryHour:18,radarPolling:{enabled:false}},workflow:{ingest:()=>{}},groupFileSource,clock:()=>1000});t.after(()=>runner.close());
+ await runner.tick();assert.deepEqual(calls,['poll','tick']);assert.equal(runner.isRunning(),false);
+ await runner.close();await runner.tick();assert.deepEqual(calls,['poll','tick']);store.close();
+});

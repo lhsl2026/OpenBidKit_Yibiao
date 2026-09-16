@@ -12,6 +12,7 @@ const { createCardSource, toWorkflowAction } = require('./card-source.cjs');
 const { createSelection } = require('./selection.cjs');
 const { createDocumentRecovery } = require('./document-recovery.cjs');
 const { createReportArchive } = require('./report-archive.cjs');
+const { createGroupFileSource } = require('./group-file-source.cjs');
 const { isSourceInboxActive } = require('./receipt.cjs');
 const { deadlineFrom, resolveDeadline } = require('./handoff-fields.cjs');
 const { buildCompanyEvidenceProfile, createCompanyEvidenceSync } = require('./company-evidence.cjs');
@@ -36,7 +37,7 @@ function readEvidenceInWorker(config, { signal } = {}) {
     worker.once('exit', () => { if (!settled) finish(Error('snapshot_unavailable')); });
   });
 }
-function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, codexBridgeFactory, prereadFactory = createPrereadClient } = {}) {
+function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, groupFileSourceFactory = createGroupFileSource, codexBridgeFactory, prereadFactory = createPrereadClient } = {}) {
   const store = createStore(path.join(config.dataRoot, 'workflow.sqlite3'));
   const snapshotController = new AbortController();
   let snapshot = { records: [], warnings: ['vault_not_configured'] }, snapshotAt = 0, vaultReady = false, rules = [];
@@ -92,15 +93,16 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     job, root: config.writingRoot, electronPath: config.electronPath, clientRoot: config.clientRoot,
     modelConfig: require('./codex-attempt.cjs').writingModelConfig({ config, store, job }), signal
   });
-  let selection, documentRecovery, reportArchive;
-  const runner = createRunner({ store, config, workflow, preread, lark, write, clock,
+  let selection, documentRecovery, reportArchive, runner;
+  const groupFileSource = groupFileSourceFactory({store,config,preread,clock,assertOwnership:()=>runner.assertOwnership(),waitingCandidates:()=>documentRecovery?.waitingCandidates?.()??[],onReceipt:(receipt,meta)=>{selection?.queue(receipt,meta);documentRecovery?.queueReceipt(receipt,meta);}});
+  runner = createRunner({ store, config, workflow, preread, lark, write, clock,groupFileSource,
     onReceipt: (receipt, meta) => { selection.queue(receipt, meta); documentRecovery.queueReceipt(receipt, meta); },
     onSourceEdited: inboxId => selection.invalidateInbox(inboxId), onTick: async args => { await documentRecovery.tick(args); await reportArchive.tick(args); } });
   documentRecovery = documentRecoveryFactory({ store, config, clock, assertOwnership: () => runner.assertOwnership(), isSourceActive: job => !job.sourceInboxId || isSourceInboxActive(store, job.sourceInboxId) });
   reportArchive = createReportArchive({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership() });
   selection = selectionFactory({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership(), onReceipt: (receipt, meta) => documentRecovery.queueReceipt(receipt, meta) });
   const cardSource = cardSourceFactory({ config, workflow, assertOwnership: () => runner.assertOwnership(), clock,
-    onAction: (value, event) => value.agent === 'openbidkit-selection' ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event)) });
+    onAction: (value, event) => value.agent === 'openbidkit-group-file' ? groupFileSource.select(value,event) : value.agent === 'openbidkit-selection' ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event)) });
   const makeCodexBridge = codexBridgeFactory ?? (args => require('./codex-bridge.cjs').createCodexBridge({
     ...args, executor: require('./codex-executor.cjs').createCodexExecutor(config.codexBridge)
   }));
@@ -119,6 +121,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     if (!preread || !config.prereadKey || !config.relayAuthorization) missing.push('preread');
     if (!config.sourceChats.length || !config.sourceSenders.length) missing.push('radar_allowlist');
     if (config.radarPolling?.enabled && config.sourceChats.some(chat=>{const s=store.get('radar-source:'+chat);return !s?.lastSuccessAt||s.error||clock()-s.lastSuccessAt>300000;})) missing.push('radar_source');
+    const groupFileState=groupFileSource.status();if(config.groupFileSource?.enabled&&(!groupFileState.lastSuccessAt||groupFileState.error||clock()-groupFileState.lastSuccessAt>300000))missing.push('group_file_source');
     if (!config.operatorIds.length || (config.cardSource?.enabled ? !cardState.ready : !config.verificationToken || !config.encryptKey)) missing.push('card_callback');
     const delivery = config.mode === 'production'
       ? { target: 'production', configured: Boolean(config.production?.cutover && config.chatId === config.production.chatId && config.allowedChats?.includes(config.chatId)) }
@@ -141,7 +144,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     return { ready: missing.length === 0, mode: config.mode, delivery, cardCallback, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
-  return { store, workflow, runner, cardSource, selection, documentRecovery, reportArchive, companyEvidence, codexBridge, server, readiness, refreshEvidence,
+  return { store, workflow, runner, cardSource, selection, documentRecovery, groupFileSource, reportArchive, companyEvidence, codexBridge, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;
