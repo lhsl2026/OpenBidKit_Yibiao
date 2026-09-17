@@ -1,12 +1,23 @@
 function createPrereadClient({baseUrl,apiKey,relayAuthorization,fetchImpl=fetch}){
   const base=new URL(baseUrl);
+  const MAX_SOURCE_BYTES=30*1024*1024;
   if(!['http:','https:'].includes(base.protocol)||base.username||base.password||base.search||base.hash)throw Error('invalid_preread_url');
   async function request(endpoint,body,relay=false){
     if((body||relay)&&!relayAuthorization?.startsWith('Bearer '))throw Error('relay_auth_missing');
     const r=await fetchImpl(base.origin+endpoint,{method:body?'POST':'GET',headers:{authorization:body||relay?relayAuthorization:'Bearer '+apiKey,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),redirect:'error',signal:AbortSignal.timeout(30000)});
     if(!r.ok)throw Error('preread_unavailable');return r.json();
   }
-  return {getHandoff:taskId=>request('/api/preread/tasks/'+encodeURIComponent(taskId)+'/handoff'),getPublication:taskId=>request('/openapi/preread/tasks/'+encodeURIComponent(taskId)+'/knowledge-publication',undefined,true),replaceCompanyProfiles:body=>request('/openapi/preread/company-profiles/import',body),receiveRadar:body=>request('/openapi/preread/events/lark-message',{...body,content:normalizeRadarContent(body.messageType,body.content)}),receiveGroupFile:body=>request('/openapi/preread/events/lark-group-file',body),attachManualDocument:(taskId,body)=>request('/openapi/preread/tasks/'+encodeURIComponent(taskId)+'/manual-documents',body),select:body=>request('/openapi/preread/events/lark-card-action',body)};
+  async function getSourceDocument(taskId,documentVersion){
+    const query=documentVersion===undefined?'':'?documentVersion='+encodeURIComponent(documentVersion);
+    const r=await fetchImpl(base.origin+'/api/preread/tasks/'+encodeURIComponent(taskId)+'/source-document'+query,{method:'GET',headers:{authorization:'Bearer '+apiKey},redirect:'error',signal:AbortSignal.timeout(30000)});
+    if(!r.ok)throw Error('preread_source_unavailable');
+    const announced=Number(r.headers.get('content-length'));if(Number.isFinite(announced)&&announced>MAX_SOURCE_BYTES)throw Error('preread_source_too_large');
+    if(!r.body)throw Error('preread_source_unavailable');const reader=r.body.getReader(),chunks=[];let total=0;
+    while(true){const {done,value}=await reader.read();if(done)break;total+=value.byteLength;if(total>MAX_SOURCE_BYTES){try{await reader.cancel();}catch{}throw Error('preread_source_too_large');}chunks.push(value);}
+    const sha256=String(r.headers.get('x-preread-document-sha256')||'').toLowerCase();if(!/^[a-f0-9]{64}$/.test(sha256))throw Error('preread_source_identity_invalid');
+    return {bytes:Buffer.concat(chunks.map(value=>Buffer.from(value)),total),sha256};
+  }
+  return {getHandoff:taskId=>request('/api/preread/tasks/'+encodeURIComponent(taskId)+'/handoff'),getSourceDocument,getPublication:taskId=>request('/openapi/preread/tasks/'+encodeURIComponent(taskId)+'/knowledge-publication',undefined,true),replaceCompanyProfiles:body=>request('/openapi/preread/company-profiles/import',body),receiveRadar:body=>request('/openapi/preread/events/lark-message',{...body,content:normalizeRadarContent(body.messageType,body.content)}),receiveGroupFile:body=>request('/openapi/preread/events/lark-group-file',body),attachManualDocument:(taskId,body)=>request('/openapi/preread/tasks/'+encodeURIComponent(taskId)+'/manual-documents',body),select:body=>request('/openapi/preread/events/lark-card-action',body)};
 }
 function parsed(content){if(typeof content!=='string')return content;try{return JSON.parse(content);}catch{return null;}}
 function postDocument(content){

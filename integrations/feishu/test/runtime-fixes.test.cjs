@@ -64,6 +64,21 @@ test('evidence revoked after enqueue prevents worker execution and clears confir
   assert.equal(f.store.getProject(f.p.id).humanDecision, null);
 });
 
+test('a source-required writing job recovers the verified preread document and resumes without another employee decision', async t => {
+  const f = fixture(t); f.enqueue(); const waiting = f.store.listWriting()[0];
+  f.store.updateWriting(waiting.id, 'waiting_confirmation', { status: 'waiting_confirmation', code: 'source_required', confirmation: { type: 'source_file' } }, Date.now());
+  const sourcePath = path.join(f.root, 'verified.pdf'); fs.writeFileSync(sourcePath, '%PDF-1.7\nverified\n%%EOF');
+  let runs = 0;
+  const r = f.runner({
+    recoverSource: async ({ project, job }) => { assert.equal(project.humanDecision, 'follow'); assert.equal(job.id, waiting.id); return { sourcePath, sha256: 'a'.repeat(64) }; },
+    write: async job => { runs++; assert.equal(job.sourcePath, sourcePath); return { status: 'waiting_confirmation', confirmation: { type: 'outline', challenge: 'outline-ready', sections: [] } }; }
+  });
+  await r.tick();
+  const resumed = f.store.listWriting()[0];
+  assert.equal(runs, 1); assert.equal(resumed.status, 'waiting_confirmation'); assert.equal(resumed.result.confirmation.type, 'outline');
+  assert.equal(f.store.getProject(f.p.id).humanDecision, 'follow');
+});
+
 test('evidence revoked during worker execution discards its returned artifacts', async t => {
   const f = fixture(t); f.enqueue();
   const r = f.runner({ write: async () => { f.revoke(); return { status: 'completed', artifacts: [{ path: '/unused', sha256: 'b' }] }; } });

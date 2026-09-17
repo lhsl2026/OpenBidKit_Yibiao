@@ -6,13 +6,15 @@ const { enqueueArtifacts, deliverFiles } = require('./files.cjs');
 const { recordReceipt, inspectReceipt, isSourceInboxActive } = require('./receipt.cjs');
 const { normalizeRadarContent } = require('./preread.cjs');
 const { canGenerateDraft } = require('./writing-policy.cjs');
+const { recoverWritingSource } = require('./source-recovery.cjs');
 
-function createRunner({ store, config, workflow, preread, lark, write, onReceipt, onSourceEdited, onTick, groupFileSource, clock = Date.now }) {
+function createRunner({ store, config, workflow, preread, lark, write, recoverSource, onReceipt, onSourceEdited, onTick, groupFileSource, clock = Date.now }) {
   const owner = randomUUID(), controller = new AbortController();
   let running = false, acquired = false, lost = false, closing = false, renewal;
   const radarSource = require('./radar-source.cjs').createRadarSource({store,config,receive:receiveRadar,clock,assertOwnership,signal:controller.signal});
   const revalidate = id => workflow.revalidate ? workflow.revalidate(id) : store.getProject(id);
   const watchActive=w=>{const current=store.getWatch(w.task_id);return !!current&&JSON.stringify(current.payload)===JSON.stringify(w.payload)&&(!w.payload.sourceInboxId||isSourceInboxActive(store,w.payload.sourceInboxId));};
+  const sourceRecovery=recoverSource??(preread&&config.writingRoot?({project})=>recoverWritingSource({project,root:config.writingRoot,client:preread}):null);
 
   function loseOwnership() {
     lost = true; clearInterval(renewal); controller.abort(new Error('runner_lease_lost'));
@@ -86,6 +88,18 @@ function createRunner({ store, config, workflow, preread, lark, write, onReceipt
       });
     }
   }
+  async function recoverWritingSources(){
+    if(!sourceRecovery)return;
+    for(const candidate of store.listWriting().filter(job=>!job.payload?.sourcePath&&(job.status==='queued'||(job.status==='waiting_confirmation'&&job.result?.code==='source_required')))){
+      assertOwnership();let project=revalidate(candidate.project_id);if(!canWrite(project,clock()))continue;
+      const stateKey='sourceRecovery:'+candidate.id,backoff=store.get(stateKey);if(backoff?.nextAt>clock())continue;
+      let source;try{source=await sourceRecovery({project,job:candidate});}catch{assertOwnership();store.set(stateKey,{nextAt:clock()+60000});continue;}
+      assertOwnership();project=revalidate(candidate.project_id);const current=store.listWriting().find(job=>job.id===candidate.id);
+      const expected=String(project?.checksum??'').replace(/^sha256:/i,'').toLowerCase();
+      if(!current||!canWrite(project,clock())||current.payload?.sourcePath||source?.sha256!==expected||typeof source?.sourcePath!=='string')continue;
+      store.transaction(()=>{store.resumeWriting(current,{...current.payload,sourcePath:source.sourcePath,sourceChecksum:source.sha256},clock(),current.stage);store.set(stateKey,{completed:true});store.touchCard(project.id,clock());});
+    }
+  }
   async function tick() {
     if (running || closing || !acquire()) return;
     running = true;
@@ -112,6 +126,7 @@ function createRunner({ store, config, workflow, preread, lark, write, onReceipt
       }
       if(onTick){assertOwnership();await onTick({signal:controller.signal});assertOwnership();}
       recoverArtifacts();
+      await recoverWritingSources();
       if (write) for (const selected of store.listWriting().filter(j => j.status === 'queued')) {
         assertOwnership(); let p = revalidate(selected.project_id);
         const job = store.listWriting().find(j => j.id === selected.id);
