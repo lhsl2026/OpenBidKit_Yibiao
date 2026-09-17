@@ -79,6 +79,27 @@ test('a source-required writing job recovers the verified preread document and r
   assert.equal(f.store.getProject(f.p.id).humanDecision, 'follow');
 });
 
+test('a draft affected by the empty outline-selection bug resumes once without another employee action', async t => {
+  const f = fixture(t); f.enqueue(); const failed = f.store.listWriting()[0];
+  failed.payload.confirmations = {
+    outlineSelection: { challenge: 'legacy-outline', taskId: 'outline-task', selectedIds: [] },
+  };
+  f.store.resumeWriting(failed, failed.payload, Date.now(), 'outline');
+  f.store.updateWriting(failed.id, 'failed', { status: 'failed', code: 'invalid_outline_selection', message: '目录选择无效' }, Date.now(), 'outline');
+  let runs = 0;
+  const r = f.runner({ write: async job => {
+    runs++;
+    assert.deepEqual(job.confirmations.outlineSelection.selectedIds, []);
+    return { status: 'waiting_confirmation', confirmation: { type: 'outline', challenge: 'outline-ready', outlineData: { outline: [] } } };
+  } });
+  await r.tick();
+  const resumed = f.store.listWriting()[0];
+  assert.equal(runs, 1);
+  assert.equal(resumed.status, 'waiting_confirmation');
+  assert.deepEqual(f.store.get('legacyOutlineRecovery:' + failed.id), { completed: true });
+  assert.equal(f.store.getProject(f.p.id).humanDecision, 'follow');
+});
+
 test('evidence revoked during worker execution discards its returned artifacts', async t => {
   const f = fixture(t); f.enqueue();
   const r = f.runner({ write: async () => { f.revoke(); return { status: 'completed', artifacts: [{ path: '/unused', sha256: 'b' }] }; } });

@@ -275,6 +275,57 @@ test('prepare stage runs through Electron services in its isolated userData', { 
   assert.match(requirementRow.content, /PDF 第 12 页/);
 });
 
+test('outline confirmation defaults every displayed recommendation to selected', { timeout: 60_000 }, async (t) => {
+  const { DatabaseSync } = require('node:sqlite');
+  const { workspaceRoot, sourcePath } = createFixture(t);
+  const clientRoot = path.resolve(__dirname, '..', '..', '..', 'client');
+  const electronPath = path.join(clientRoot, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
+  if (!fs.existsSync(electronPath)) {
+    t.skip('Electron binary is not installed');
+    return;
+  }
+  const base = makeJob(sourcePath);
+  const modelConfig = {
+    provider: 'custom',
+    api_key: 'offline-smoke-only',
+    base_url: 'http://127.0.0.1:1/v1',
+    model_name: 'offline-smoke',
+  };
+  const prepared = await runWritingJob({ job: base, root: workspaceRoot, electronPath, clientRoot, modelConfig });
+  assert.equal(prepared.status, 'completed');
+  const timestamp = '2026-09-17T00:00:00.000Z';
+  const items = [
+    { id: 'chapter-a', title: '项目理解' },
+    { id: 'chapter-b', title: '实施方案' },
+  ];
+  const database = new DatabaseSync(path.join(prepared.paths.workspace, 'yibiao.sqlite'));
+  database.prepare(`INSERT INTO technical_plan_tasks
+    (type,task_id,status,progress,stats_json,error,pause_requested,started_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    'outline-generation',
+    'outline-default-selection',
+    'success',
+    30,
+    JSON.stringify({ outline_selection: { items, selected_ids: [], confirmed: false } }),
+    null,
+    0,
+    timestamp,
+    timestamp,
+  );
+  database.close();
+
+  const result = await runWritingJob({
+    job: { ...base, stage: 'outline' },
+    root: workspaceRoot,
+    electronPath,
+    clientRoot,
+    modelConfig,
+  });
+  assert.equal(result.status, 'waiting_confirmation');
+  assert.equal(result.confirmation.type, 'outline_selection');
+  assert.deepEqual(result.confirmation.selectedIds, ['chapter-a', 'chapter-b']);
+});
+
 test('content stage waits on the current outline challenge without changing the requested stage', { timeout: 60_000 }, async (t) => {
   const { DatabaseSync } = require('node:sqlite');
   const { workspaceRoot, sourcePath } = createFixture(t);

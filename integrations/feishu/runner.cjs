@@ -100,6 +100,13 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
       store.transaction(()=>{store.resumeWriting(current,{...current.payload,sourcePath:source.sourcePath,sourceChecksum:source.sha256},clock(),current.stage);store.set(stateKey,{completed:true});store.touchCard(project.id,clock());});
     }
   }
+  function recoverLegacyOutlineSelections(){
+    for(const candidate of store.listWriting().filter(job=>job.status==='failed'&&job.stage==='outline'&&job.result?.code==='invalid_outline_selection'&&Array.isArray(job.payload?.confirmations?.outlineSelection?.selectedIds)&&job.payload.confirmations.outlineSelection.selectedIds.length===0)){
+      assertOwnership();const project=revalidate(candidate.project_id);if(!canWrite(project,clock()))continue;
+      const stateKey='legacyOutlineRecovery:'+candidate.id;if(store.get(stateKey))continue;
+      store.transaction(()=>{store.resumeWriting(candidate,candidate.payload,clock(),candidate.stage);store.set(stateKey,{completed:true});store.touchCard(project.id,clock());});
+    }
+  }
   async function tick() {
     if (running || closing || !acquire()) return;
     running = true;
@@ -125,6 +132,7 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
         }
       }
       if(onTick){assertOwnership();await onTick({signal:controller.signal});assertOwnership();}
+      recoverLegacyOutlineSelections();
       recoverArtifacts();
       await recoverWritingSources();
       if (write) for (const selected of store.listWriting().filter(j => j.status === 'queued')) {

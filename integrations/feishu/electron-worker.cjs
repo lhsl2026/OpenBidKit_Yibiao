@@ -252,7 +252,9 @@ function observeTask(taskService, type, start) {
 
 function outlineSelectionResult(task) {
   const selection = task.stats.outline_selection;
-  const value = { taskId: task.task_id, items: selection.items, selectedIds: selection.selected_ids || [] };
+  const savedIds = Array.isArray(selection.selected_ids) ? selection.selected_ids.map(String) : [];
+  const selectedIds = savedIds.length ? savedIds : selection.items.map((item) => String(item.id));
+  const value = { taskId: task.task_id, items: selection.items, selectedIds };
   return baseResult('waiting_confirmation', 'outline', {
     code: 'outline_selection_required',
     message: '一级目录已生成，等待人工确认',
@@ -291,11 +293,18 @@ async function outlineStage(services) {
   if (pendingSelection?.items?.length && pendingSelection.confirmed !== true) {
     const pendingResult = outlineSelectionResult(state.outlineGenerationTask);
     if (!supplied) return pendingResult;
-    if (supplied.challenge !== pendingResult.confirmation.challenge || supplied.taskId !== state.outlineGenerationTask.task_id) {
+    const legacyValue = { taskId: state.outlineGenerationTask.task_id, items: pendingSelection.items, selectedIds: [] };
+    const legacyChallenge = challengeFor(input.prepared, 'outline', 'outline_selection', legacyValue);
+    const legacyDefault = Array.isArray(supplied.selectedIds)
+      && supplied.selectedIds.length === 0
+      && supplied.challenge === legacyChallenge;
+    if ((!legacyDefault && supplied.challenge !== pendingResult.confirmation.challenge) || supplied.taskId !== state.outlineGenerationTask.task_id) {
       return baseResult('failed', 'outline', { code: 'stale_confirmation', message: '目录确认已过期' });
     }
     const allowedIds = new Set(pendingSelection.items.map((item) => item.id));
-    const selectedIds = Array.isArray(supplied.selectedIds) ? [...new Set(supplied.selectedIds.map(String))] : [];
+    const selectedIds = legacyDefault
+      ? pendingResult.confirmation.selectedIds
+      : Array.isArray(supplied.selectedIds) ? [...new Set(supplied.selectedIds.map(String))] : [];
     if (!selectedIds.length || selectedIds.some((id) => !allowedIds.has(id))) {
       return baseResult('failed', 'outline', { code: 'invalid_outline_selection', message: '目录选择无效' });
     }
