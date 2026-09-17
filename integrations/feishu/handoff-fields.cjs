@@ -2,7 +2,7 @@ const basicLabels = new Map(Object.entries({projectName:'项目名称',tenderCod
 function fieldLabel(r){const name=String(r.id??'').replace(/^basic:/,'');return r.category==='basic'&&basicLabels.has(name)?basicLabels.get(name):r.key;}
 function isDeadline(r){return r.category==='basic'&&r.id==='basic:bidDeadline'||/投标截止|递交.*截止/.test(r.key);}
 function parseDeadline(value){
- value=String(value??'').trim();let iso=value;
+ value=String(value??'').replace(/\s*[（(]北京时间[）)]\s*$/u,'').trim();let iso=value;
  if(!/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?(?:Z|[+-]\d\d:\d\d)$/.test(iso)){
   const m=value.match(/^(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?\s+(\d{1,2})(?:[:：](\d{2})(?::(\d{2}))?|时(\d{2})分(?:(\d{2})秒)?)$/);
   if(!m)return '';iso=`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}T${m[4].padStart(2,'0')}:${m[5]??m[7]}:${m[6]??m[8]??'00'}+08:00`;

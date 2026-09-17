@@ -4,6 +4,7 @@ const {resolveDeadline}=require('../handoff-fields.cjs');
 const deadline=value=>({id:'basic:bidDeadline',key:'基础信息：bidDeadline',category:'basic',value,confidence:0.8,requiresConfirmation:false});
 test('recognizes the real preread deadline field and Chinese time while rejecting ambiguity and invalid dates',()=>{
  assert.equal(deadlineFrom({requirements:[deadline('2026年09月30日 09时30分00秒')]}),'2026-09-30T09:30:00+08:00');
+ assert.equal(deadlineFrom({requirements:[deadline('2026年10月09日 09时30分 （北京时间）')]}),'2026-10-09T09:30:00+08:00');
  for(const value of ['2026年02月30日 09时30分00秒','2026年09月30日 25时30分00秒'])assert.equal(deadlineFrom({requirements:[deadline(value)]}),'');
  assert.equal(deadlineFrom({requirements:[{...deadline('2026-09-30T09:30:00+08:00'),requiresConfirmation:true}]}),'');
  assert.equal(deadlineFrom({requirements:[{...deadline('2026-09-30T09:30:00+08:00'),confidence:undefined}]}),'');
