@@ -6,13 +6,22 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { createStore } = require('../store.cjs');
 const { createWorkflow } = require('../workflow.cjs');
-const { createRunner } = require('../runner.cjs');
+const { createRunner, canWrite } = require('../runner.cjs');
 const { deliverOutbox } = require('../lark.cjs');
 const { deliverFiles, enqueueArtifacts } = require('../files.cjs');
 const { createApplication, readEvidenceInWorker } = require('../main.cjs');
 const { loadConfig } = require('../config.cjs');
 
 const good = { decision: 'follow', items: [], blockers: [], actions: [] };
+test('writing gate allows evidence placeholders but blocks unsafe review states',()=>{
+ const project={current:true,humanDecision:'follow',input:{deadline:'2099-01-01T00:00:00+08:00',handoff:{status:'ready',superseded:false,warnings:[]}},assessment:{decision:'review',items:[{requirementId:'q',status:'review',reasons:['verified_evidence_missing']}],blockers:['q:verified_evidence_missing']}};
+ assert.equal(canWrite(project,Date.parse('2026-09-17T00:00:00Z')),true);
+ const sourceReview={...project,assessment:{decision:'review',items:[{requirementId:'redline',status:'review',reasons:['requirement_confirmation_pending','requirement_confidence_low','structured_rule_missing']}],blockers:['redline:requirement_confirmation_pending','redline:requirement_confidence_low','redline:structured_rule_missing']}};
+ assert.equal(canWrite(sourceReview,Date.parse('2026-09-17T00:00:00Z')),true);
+ assert.equal(canWrite({...project,assessment:{decision:'review',items:[{requirementId:'q',status:'not_satisfied',reasons:['manual_result_not_satisfied']}],blockers:['q:manual_result_not_satisfied']}},Date.parse('2026-09-17T00:00:00Z')),false);
+ assert.equal(canWrite({...project,assessment:{decision:'review',items:[{requirementId:'q',status:'review',reasons:['requirement_confidence_invalid']}],blockers:['q:requirement_confidence_invalid']}},Date.parse('2026-09-17T00:00:00Z')),false);
+ assert.equal(canWrite({...project,assessment:{decision:'review',items:[],blockers:['vault_unavailable']}},Date.parse('2026-09-17T00:00:00Z')),false);
+});
 test('a fenced live process fails health so the supervisor can restart it',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'bid-health-'));
   const config={...loadConfig({}),dataRoot:root,port:0,companyId:'c'};

@@ -1,5 +1,6 @@
 const fs=require('node:fs');const path=require('node:path');const {createHash}=require('node:crypto');
 const {confirmationText}=require('./preview.cjs');
+const {canGenerateDraft}=require('./writing-policy.cjs');
 function inside(root,file){const relative=path.relative(fs.realpathSync(root),fs.realpathSync(file));return relative&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative);}
 function enqueueArtifacts(store,projectId,result,root){
  const epoch=store.listWriting().find(j=>j.project_id===projectId)?.payload.deliveryEpoch;
@@ -19,7 +20,7 @@ async function deliverFiles({store,client,root,mode,chatId,allowedChats=[],clock
   const valid=()=>{
    const job=store.listWriting().find(j=>j.project_id===row.project_id),epoch=job?.payload.deliveryEpoch;
    return store.getFile(row.id)?.delivered===0&&(!epoch||row.id===store.key('file',row.project_id,row.path,row.sha256,epoch))
-    &&p?.current&&p.humanDecision==='follow'&&p.assessment.decision==='follow'&&Date.parse(p.input.deadline)>clock();
+    &&canGenerateDraft(p,clock());
   };
   if(!valid()){store.finishFile(row.id,null,-1);continue;}
   if(row.first_attempt!==null&&clock()-row.first_attempt>45*60000){store.finishFile(row.id,null,-1);continue;}

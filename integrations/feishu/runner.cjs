@@ -5,6 +5,7 @@ const { buildSummary } = require('./card.cjs');
 const { enqueueArtifacts, deliverFiles } = require('./files.cjs');
 const { recordReceipt, inspectReceipt, isSourceInboxActive } = require('./receipt.cjs');
 const { normalizeRadarContent } = require('./preread.cjs');
+const { canGenerateDraft } = require('./writing-policy.cjs');
 
 function createRunner({ store, config, workflow, preread, lark, write, onReceipt, onSourceEdited, onTick, groupFileSource, clock = Date.now }) {
   const owner = randomUUID(), controller = new AbortController();
@@ -154,7 +155,6 @@ function createRunner({ store, config, workflow, preread, lark, write, onReceipt
   return { tick, receiveRadar, acquire, assertOwnership, close, isRunning: () => running };
 }
 function canWrite(p, now) {
-  return p?.current && p.humanDecision === 'follow' && p.assessment.decision === 'follow' && p.input.handoff.status === 'ready'
-    && !p.input.handoff.superseded && !p.input.handoff.warnings.some(w => w.blocked) && Date.parse(p.input.deadline) > now;
+  return canGenerateDraft(p, now);
 }
 module.exports = { createRunner, canWrite };

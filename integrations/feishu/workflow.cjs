@@ -1,4 +1,5 @@
 const {key}=require('./store.cjs');
+const {canGenerateDraft}=require('./writing-policy.cjs');
 function validateInput(input){
   const h=input?.handoff,s=h?.snapshot;
   if(!input.companyId||h?.schemaVersion!=='1.0'||!h.task?.taskId||!h.task?.title||!s?.documentVersion||!s.reportId||!s.checksum||!Number.isFinite(Date.parse(s.generatedAt))||!Array.isArray(h.requirements)||!Array.isArray(h.warnings)||!Array.isArray(h.evidence))throw new Error('invalid_handoff');
@@ -61,8 +62,9 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
         store.set('cardPage:'+p.id,action.page);store.touchCard(p.id,clock());result={projectId:p.id,status:'view_updated'};
       }else if(['write','continue','retry'].includes(action.action)){
         if(p.humanDecision!=='follow')throw new Error('follow_required');
-        const h=p.input.handoff;const deadline=Date.parse(p.input.deadline);
-        if(h.status!=='ready'||h.superseded||h.warnings.some(w=>w.blocked)||!Number.isFinite(deadline)||deadline<=clock()||p.assessment.decision!=='follow'||assessed(p.input).decision!=='follow')throw new Error('writing_not_ready');
+        const currentAssessment=assessed(p.input);
+        if(JSON.stringify(p.assessment)!==JSON.stringify(currentAssessment))throw new Error('writing_not_ready');
+        if(!canGenerateDraft(p,clock()))throw new Error('writing_not_ready');
         let jobId;
         if(action.action==='write')jobId=store.enqueueWriting(p,clock());
         else{
