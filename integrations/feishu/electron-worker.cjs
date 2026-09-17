@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
+const { draftArtifactPath } = require('./artifact-names.cjs');
 
 const RESULT_PREFIX = 'FEISHU_WRITING_RESULT:';
 
@@ -495,10 +496,6 @@ async function contentStage(services) {
   return baseResult('completed', 'content', { nextStage: 'export', paths: resultPaths() });
 }
 
-function safeArtifactName(value) {
-  return String(value || '投标文件').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/g, '').slice(0, 80) || '投标文件';
-}
-
 async function exportStage(services) {
   const state = services.technicalPlanStore.loadTechnicalPlan();
   if (state.contentGenerationTask?.status !== 'success' || !state.outlineData?.outline?.length) {
@@ -510,7 +507,7 @@ async function exportStage(services) {
     outline: state.outlineData.outline,
     export_format: services.configStore.load().export_format,
   });
-  const filePath = path.join(input.prepared.artifacts, `${safeArtifactName(input.job?.handoff?.task?.title)}-${safeArtifactName(input.prepared.documentVersion)}.docx`);
+  const filePath = draftArtifactPath(input.prepared.artifacts, input.job?.handoff?.task?.title, input.prepared.documentVersion);
   fs.writeFileSync(filePath, built.buffer);
   const stat = fs.statSync(filePath);
   return baseResult('completed', 'export', {

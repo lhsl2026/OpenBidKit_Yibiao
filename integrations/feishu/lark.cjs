@@ -27,7 +27,7 @@ async function deliverOutbox({store,client,mode,chatId,allowedChats=[],clock=Dat
     try{
       const cardFor=project=>{
         const writing=store.listWriting().find(w=>w.project_id===project.id);
-        if(writing?.result?.confirmation?.challenge)writing.previewDelivered=Boolean(store.get('previewDelivered:'+writing.result.confirmation.challenge));
+        if(writing?.result?.confirmation?.challenge)writing.confirmationPublished=Boolean(store.get('confirmationPublished:'+writing.result.confirmation.challenge));
         return buildCard(project,writing,store.get('cardPage:'+project.id)||0);
       };
       const card=p?cardFor(p):JSON.parse(row.payload);

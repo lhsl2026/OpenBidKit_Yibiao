@@ -75,7 +75,7 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
           }else{
             const c=job.result?.confirmation;
             if(job.status!=='waiting_confirmation'||!c?.challenge||c.challenge!==action.challenge)throw Error('confirmation_stale');
-            if(!store.get('previewDelivered:'+c.challenge))throw Error('confirmation_preview_pending');
+            if(!store.get('confirmationPublished:'+c.challenge))throw Error('confirmation_document_pending');
             const confirmations={...job.payload.confirmations};let stage=job.stage;
             if(c.type==='outline_selection')confirmations.outlineSelection={challenge:c.challenge,taskId:c.taskId,selectedIds:c.selectedIds};
             else if(c.type==='outline'){confirmations.outlineApproval={challenge:c.challenge,approved:true};stage='content';}

@@ -12,6 +12,7 @@ const { createCardSource, toWorkflowAction } = require('./card-source.cjs');
 const { createSelection } = require('./selection.cjs');
 const { createDocumentRecovery } = require('./document-recovery.cjs');
 const { createReportArchive } = require('./report-archive.cjs');
+const { createWritingConfirmationDoc } = require('./writing-confirmation-doc.cjs');
 const { createGroupFileSource } = require('./group-file-source.cjs');
 const { isSourceInboxActive } = require('./receipt.cjs');
 const { deadlineFrom, resolveDeadline } = require('./handoff-fields.cjs');
@@ -93,13 +94,14 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     job, root: config.writingRoot, electronPath: config.electronPath, clientRoot: config.clientRoot,
     modelConfig: require('./codex-attempt.cjs').writingModelConfig({ config, store, job }), signal
   });
-  let selection, documentRecovery, reportArchive, runner;
+  let selection, documentRecovery, reportArchive, writingConfirmationDoc, runner;
   const groupFileSource = groupFileSourceFactory({store,config,preread,clock,assertOwnership:()=>runner.assertOwnership(),waitingCandidates:()=>documentRecovery?.waitingCandidates?.()??[],onReceipt:(receipt,meta)=>{selection?.queue(receipt,meta);documentRecovery?.queueReceipt(receipt,meta);}});
   runner = createRunner({ store, config, workflow, preread, lark, write, clock,groupFileSource,
     onReceipt: (receipt, meta) => { selection.queue(receipt, meta); documentRecovery.queueReceipt(receipt, meta); },
-    onSourceEdited: inboxId => selection.invalidateInbox(inboxId), onTick: async args => { await documentRecovery.tick(args); await reportArchive.tick(args); } });
+    onSourceEdited: inboxId => selection.invalidateInbox(inboxId), onTick: async args => { await documentRecovery.tick(args); await reportArchive.tick(args); await writingConfirmationDoc.tick(args); } });
   documentRecovery = documentRecoveryFactory({ store, config, clock, assertOwnership: () => runner.assertOwnership(), isSourceActive: job => !job.sourceInboxId || isSourceInboxActive(store, job.sourceInboxId) });
   reportArchive = createReportArchive({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership() });
+  writingConfirmationDoc = createWritingConfirmationDoc({ store, config, clock, assertOwnership: () => runner.assertOwnership() });
   selection = selectionFactory({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership(), onReceipt: (receipt, meta) => documentRecovery.queueReceipt(receipt, meta) });
   const cardSource = cardSourceFactory({ config, workflow, assertOwnership: () => runner.assertOwnership(), clock,
     onAction: (value, event) => value.agent === 'openbidkit-group-file' ? groupFileSource.select(value,event) : value.agent === 'openbidkit-selection' ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event)) });
@@ -144,7 +146,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     return { ready: missing.length === 0, mode: config.mode, delivery, cardCallback, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
-  return { store, workflow, runner, cardSource, selection, documentRecovery, groupFileSource, reportArchive, companyEvidence, codexBridge, server, readiness, refreshEvidence,
+  return { store, workflow, runner, cardSource, selection, documentRecovery, groupFileSource, reportArchive, writingConfirmationDoc, companyEvidence, codexBridge, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;

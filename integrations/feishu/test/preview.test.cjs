@@ -1,2 +1,0 @@
-const {test}=require('node:test');const assert=require('node:assert/strict');const {confirmationText}=require('../preview.cjs');
-test('group preview lists affected sections without exposing provider error details or callback tokens',()=>{const text=confirmationText({type:'content_decision',challenge:'private-callback-token',failedSections:[{title:'实施方案',error:'Incorrect API key provided: secret-value'}]});assert.match(text,/实施方案/);assert.doesNotMatch(text,/secret-value|private-callback-token|API key/);});

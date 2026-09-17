@@ -160,25 +160,21 @@ test('lease loss during worker await prevents result commits and further externa
 
 test('saved worker results rebuild missing artifact outbox without rerunning the model', async t => {
   const f = fixture(t); f.enqueue(); const job = f.store.listWriting()[0];
-  f.store.updateWriting(job.id, 'waiting_confirmation', { status: 'waiting_confirmation', confirmation: { type: 'outline', challenge: 'recover-me', outlineData: { outline: [{ title: 'Synthetic chapter' }] } } }, Date.now());
+  const artifact=path.join(f.root,'已生成初稿.docx');fs.writeFileSync(artifact,'Synthetic draft');
+  f.store.updateWriting(job.id, 'completed', { status: 'completed', artifacts: [{path:artifact,sha256:createHash('sha256').update('Synthetic draft').digest('hex')}] }, Date.now());
   const r = f.runner({ write: async () => assert.fail('saved result reran model') });
   await r.tick();
   const rows = f.store.listFiles(Date.now()); assert.equal(rows.length, 1);
-  assert.ok(fs.readFileSync(rows[0].path, 'utf8').includes('Synthetic chapter'));
+  assert.equal(path.basename(rows[0].path),'已生成初稿.docx');
   await r.tick(); assert.equal(f.store.listFiles(Date.now()).length, 1);
 });
 
-test('a preview bookkeeping failure rolls back delivery and retry completes both atomically', async t => {
+test('waiting confirmations bypass file delivery and remain gated for online document publication', async t => {
   const f = fixture(t); f.enqueue(); const job = f.store.listWriting()[0];
   const result = { status: 'waiting_confirmation', confirmation: { type: 'outline', challenge: 'atomic-preview', sections: [] } };
   f.store.updateWriting(job.id, 'waiting_confirmation', result, Date.now()); enqueueArtifacts(f.store, f.p.id, result, f.root);
-  let now = Date.now(); const args = { store: f.store, root: f.root, mode: 'test', chatId: 'chat', allowedChats: ['chat'], clock: () => now, client: { uploadFile: async () => 'fk', sendFile: async () => 'msg' } };
-  f.store.db.exec("CREATE TRIGGER fail_preview BEFORE INSERT ON settings WHEN NEW.key LIKE 'previewDelivered:%' BEGIN SELECT RAISE(ABORT,'injected failure'); END");
-  await deliverFiles(args);
-  assert.equal(f.store.db.prepare('SELECT delivered FROM file_outbox').get().delivered, 0);
-  f.store.db.exec('DROP TRIGGER fail_preview'); now += 60001; await deliverFiles(args);
-  assert.equal(f.store.get('previewDelivered:atomic-preview'), 'msg');
-  assert.equal(f.store.db.prepare('SELECT delivered FROM file_outbox').get().delivered, 1);
+  assert.equal(f.store.listFiles(Infinity).length,0);
+  assert.equal(f.store.get('confirmationPublished:atomic-preview'),null);
 });
 
 test('configured rules can be revoked despite persisted handoff rules and stale cache fails closed', async t => {
@@ -251,7 +247,7 @@ test('authorized card pagination keeps the decision and rejects out-of-range pag
 test('content failure continuation only authorizes retry_failed for the delivered challenge', t => {
   const f = fixture(t); f.enqueue(); const job = f.store.listWriting()[0];
   f.store.updateWriting(job.id, 'waiting_confirmation', { confirmation: { type: 'content_decision', challenge: 'failed-section' } }, Date.now(), 'content');
-  f.store.set('previewDelivered:failed-section', 'preview-message');
+  f.store.set('confirmationPublished:failed-section', {contentHash:'published'});
   f.workflow.act({ ...f.base, action: 'continue', challenge: 'failed-section', eventId: 'retry-section' });
   const updated = f.store.listWriting()[0];
   assert.equal(updated.stage, 'content');

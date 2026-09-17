@@ -10,7 +10,7 @@ const { recoverWritingSource } = require('./source-recovery.cjs');
 
 function createRunner({ store, config, workflow, preread, lark, write, recoverSource, onReceipt, onSourceEdited, onTick, groupFileSource, clock = Date.now }) {
   const owner = randomUUID(), controller = new AbortController();
-  let running = false, acquired = false, lost = false, closing = false, renewal;
+  let running = false, writingLane = null, acquired = false, lost = false, closing = false, renewal;
   const radarSource = require('./radar-source.cjs').createRadarSource({store,config,receive:receiveRadar,clock,assertOwnership,signal:controller.signal});
   const revalidate = id => workflow.revalidate ? workflow.revalidate(id) : store.getProject(id);
   const watchActive=w=>{const current=store.getWatch(w.task_id);return !!current&&JSON.stringify(current.payload)===JSON.stringify(w.payload)&&(!w.payload.sourceInboxId||isSourceInboxActive(store,w.payload.sourceInboxId));};
@@ -107,6 +107,41 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
       store.transaction(()=>{store.resumeWriting(candidate,candidate.payload,clock(),candidate.stage);store.set(stateKey,{completed:true});store.touchCard(project.id,clock());});
     }
   }
+  function startWritingLane() {
+    if (!write || writingLane || closing || controller.signal.aborted) return;
+    const selected = store.listWriting().find(job => job.status === 'queued');
+    if (!selected) return;
+    assertOwnership();
+    let project = revalidate(selected.project_id);
+    const job = store.listWriting().find(item => item.id === selected.id);
+    if (!job || !canWrite(project, clock()) || job.status !== 'queued') {
+      if (job?.status === 'queued') store.updateWriting(job.id, 'cancelled', { code: 'project_not_ready' }, clock());
+      return;
+    }
+    store.transaction(() => { store.updateWriting(job.id, 'running', job.result, clock()); store.touchCard(project.id, clock()); });
+    const lane = (async () => {
+      let result;
+      try { result = await write({ ...job.payload, stage: job.stage }, { signal: controller.signal }); }
+      catch { result = controller.signal.aborted ? { status: 'interrupted', code: 'runner_stopping' } : { status: 'failed', code: 'worker_failed' }; }
+      if (lost) return;
+      assertOwnership(); project = revalidate(job.project_id);
+      const current = store.listWriting().find(item => item.id === job.id);
+      if (!current || !canWrite(project, clock()) || current.status !== 'running') {
+        if (current?.status === 'running') store.updateWriting(job.id, 'cancelled', { code: 'project_changed' }, clock());
+        return;
+      }
+      if (controller.signal.aborted) result = { status: 'interrupted', code: 'runner_stopping' };
+      if (!result || typeof result.status !== 'string') result = { status: 'failed', code: 'worker_result_invalid' };
+      store.transaction(() => {
+        if (result.status === 'completed' && result.nextStage) store.updateWriting(job.id, 'queued', result, clock(), result.nextStage);
+        else store.updateWriting(job.id, result.status, result, clock());
+        store.touchCard(project.id, clock());
+      });
+      recoverArtifacts();
+    })();
+    writingLane = lane;
+    lane.catch(() => {}).finally(() => { if (writingLane === lane) writingLane = null; });
+  }
   async function tick() {
     if (running || closing || !acquire()) return;
     running = true;
@@ -135,30 +170,7 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
       recoverLegacyOutlineSelections();
       recoverArtifacts();
       await recoverWritingSources();
-      if (write) for (const selected of store.listWriting().filter(j => j.status === 'queued')) {
-        assertOwnership(); let p = revalidate(selected.project_id);
-        const job = store.listWriting().find(j => j.id === selected.id);
-        if (!canWrite(p, clock()) || job.status !== 'queued') {
-          if (job.status === 'queued') store.updateWriting(job.id, 'cancelled', { code: 'project_not_ready' }, clock());
-          continue;
-        }
-        store.transaction(() => { store.updateWriting(job.id, 'running', job.result, clock()); store.touchCard(p.id, clock()); });
-        let result;
-        try { result = await write({ ...job.payload, stage: job.stage }, { signal: controller.signal }); }
-        catch { result = { status: 'failed', code: 'worker_failed' }; }
-        assertOwnership(); p = revalidate(job.project_id);
-        const current = store.listWriting().find(j => j.id === job.id);
-        if (!canWrite(p, clock()) || current.status !== 'running') {
-          store.updateWriting(job.id, 'cancelled', { code: 'project_changed' }, clock()); continue;
-        }
-        if (!result || typeof result.status !== 'string') result = { status: 'failed', code: 'worker_result_invalid' };
-        store.transaction(() => {
-          if (result.status === 'completed' && result.nextStage) store.updateWriting(job.id, 'queued', result, clock(), result.nextStage);
-          else store.updateWriting(job.id, result.status, result, clock());
-          store.touchCard(p.id, clock());
-        });
-        recoverArtifacts();
-      }
+      startWritingLane();
       assertOwnership();
       const local = new Date(clock() + 8 * 3600000), day = local.toISOString().slice(0, 10);
       if (local.getUTCHours() >= config.summaryHour) store.enqueueSummary(day, buildSummary(day, store.listProjects(), store.countPendingWatches(config.companyId)));
@@ -173,9 +185,10 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
   async function close() {
     closing = true; controller.abort(new Error('runner_stopping'));
     while (running) await new Promise(r => setTimeout(r, 20));
+    if (writingLane) await writingLane.catch(() => {});
     clearInterval(renewal); if (acquired) store.release('runner', owner); acquired = false;
   }
-  return { tick, receiveRadar, acquire, assertOwnership, close, isRunning: () => running };
+  return { tick, receiveRadar, acquire, assertOwnership, close, isRunning: () => running, isWriting: () => Boolean(writingLane) };
 }
 function canWrite(p, now) {
   return canGenerateDraft(p, now);

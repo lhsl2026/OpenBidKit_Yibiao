@@ -17,8 +17,9 @@ function buildCard(p,writing,page=0,options={}){
   const writingElements=[];const c=writing?.result?.confirmation;
   if(writing?.status==='waiting_confirmation'&&c){
     const titles={outline_selection:'请确认采用建议的章节范围',outline:'请确认目录后生成正文',global_facts:'请核对事实清单；缺失信息将保留待补占位，不代表已核实',source_file:'缺少完整招标原文件，请由接入管理员补充',content_decision:'部分正文小节未完成，请查看清单后重试'};
-    writingElements.push(md(`**${titles[c.type]??'需要人工确认'}**\n完整清单以群内附件为准。`));
-    if(c.challenge&&['outline_selection','outline','global_facts','content_decision'].includes(c.type))writingElements.push({tag:'button',type:'primary_filled',disabled:!writing.previewDelivered,text:{tag:'plain_text',content:c.type==='global_facts'?'保留待补项，继续生成':c.type==='content_decision'?'重试失败小节':'确认以上内容并继续'},behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action:'continue',challenge:c.challenge}}]});
+    writingElements.push(md(`**${titles[c.type]??'需要人工确认'}**\n完整清单请查看飞书确认文档。`));
+    if(c.challenge&&p.input.writingConfirmation?.challenge===c.challenge){try{const u=new URL(p.input.writingConfirmationUrl);if(u.protocol==='https:'&&!u.username&&!u.password)writingElements.push({tag:'button',type:'default',text:{tag:'plain_text',content:'查看确认文档'},behaviors:[{type:'open_url',default_url:u.href}]});}catch{}}
+    if(c.challenge&&['outline_selection','outline','global_facts','content_decision'].includes(c.type))writingElements.push({tag:'button',type:'primary_filled',disabled:!writing.confirmationPublished,text:{tag:'plain_text',content:c.type==='global_facts'?'保留待补项，继续生成':c.type==='content_decision'?'重试失败小节':'确认以上内容并继续'},behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action:'continue',challenge:c.challenge}}]});
   }
   if(['failed','not_ready','interrupted'].includes(writing?.status))writingElements.push(button('retry','修复配置后重试'));
   const bullet=values=>values.map(value=>'• '+escapeText(value)).join('\n');
