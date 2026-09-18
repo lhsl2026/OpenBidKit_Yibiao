@@ -10,6 +10,7 @@ const AdmZip = require('../../../client/node_modules/adm-zip');
 const SOURCE_URL = 'https://ggzy.guizhou.gov.cn/tradeInfo/detailHtml?metaId=1257545352035307520';
 const DETAIL_URL = 'https://ggzy.guizhou.gov.cn/tradeInfo/detailHtmlData?code=P5203292026000BNN&type=%E9%87%87%E8%B4%AD%E5%85%AC%E5%91%8A';
 const PACKAGE_URL = 'https://ggzy.guizhou.gov.cn/hallweb/hall/attach/nosession/download?attachId=ecdbc846-8353-4e59-a921-eb8cc599b1f1';
+const ANNOUNCEMENT_PDF_URL = new URL('https://gz-gov-open-doc.oss-cn-gz-ysgzlt-d01-a.ltops.gzdata.com.cn/public/采购需求9.15.pdf').href;
 const PDF = Buffer.from('%PDF-1.7\nsynthetic tender document\n%%EOF', 'ascii');
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -95,6 +96,87 @@ test('recovers the only public ZYZF tender PDF in exactly three credential-free 
     assert.equal(call.options.headers.authorization, undefined);
     assert.equal(call.options.headers.cookie, undefined);
     assert.ok(call.options.signal instanceof AbortSignal);
+  }
+});
+
+test('recovers the only trusted announcement PDF as an explicitly incomplete attachment', async () => {
+  const calls = [];
+  const fetchImpl = fakeFetch([
+    { url: SOURCE_URL, response: response(pageHtml(), { type: 'text/html' }) },
+    {
+      url: DETAIL_URL,
+      response: response(detailJson(
+        `<a href="${ANNOUNCEMENT_PDF_URL}">采购需求9.15.pdf</a>`,
+      ), { type: 'application/json' }),
+    },
+    {
+      url: ANNOUNCEMENT_PDF_URL,
+      response: response(PDF, {
+        type: 'application/pdf',
+        disposition:
+          'attachment; filename=%E9%87%87%E8%B4%AD%E9%9C%80%E6%B1%829.15.pdf',
+      }),
+    },
+  ], calls);
+
+  const result = await createGuizhouSource({ fetchImpl }).recover({ sourceUrl: SOURCE_URL });
+
+  assert.equal(result.status, 'partial_obtained');
+  assert.deepEqual(result.bytes, PDF);
+  assert.equal(result.fileName, '采购需求9.15-公告附件-非完整招标文件.pdf');
+  assert.equal(result.sha256, sha256(PDF));
+  assert.equal(result.officialCategory, 'announcement_attachment');
+  assert.equal(result.sourceUrl, SOURCE_URL);
+  assert.equal(result.provenance.attachmentUrl, ANNOUNCEMENT_PDF_URL);
+  assert.equal(result.provenance.attachmentSha256, sha256(PDF));
+  assert.equal(calls.length, 3);
+});
+
+test('fails closed for ambiguous or untrusted announcement PDF candidates', async () => {
+  const fixtures = [
+    {
+      anchors: `<a href="${ANNOUNCEMENT_PDF_URL}">需求一.pdf</a><a href="${ANNOUNCEMENT_PDF_URL.replace('9.15', '9.16')}">需求二.pdf</a>`,
+      reason: 'announcement_pdf_ambiguous',
+    },
+    {
+      anchors: '<a href="https://evil.example/采购需求.pdf">采购需求.pdf</a>',
+      reason: 'announcement_pdf_invalid',
+    },
+    {
+      anchors: '<a href="http://gz-gov-open-doc.oss-cn-gz-ysgzlt-d01-a.ltops.gzdata.com.cn/采购需求.pdf">采购需求.pdf</a>',
+      reason: 'announcement_pdf_invalid',
+    },
+  ];
+  for (const fixture of fixtures) {
+    const calls = [];
+    const fetchImpl = fakeFetch([
+      { url: SOURCE_URL, response: response(pageHtml(), { type: 'text/html' }) },
+      { url: DETAIL_URL, response: response(detailJson(fixture.anchors), { type: 'application/json' }) },
+    ], calls);
+    const result = await createGuizhouSource({ fetchImpl }).recover({ sourceUrl: SOURCE_URL });
+    assert.equal(result.status, 'manual');
+    assert.equal(result.reason, fixture.reason);
+    assert.equal(calls.length, 2);
+  }
+});
+
+test('rejects invalid, redirected, and oversized announcement PDFs', async () => {
+  const invalidPdf = Buffer.from('%PDF-1.7\nmissing eof', 'ascii');
+  for (const fixture of [
+    { response: response(invalidPdf, { type: 'application/pdf' }), reason: 'announcement_pdf_invalid' },
+    { response: response(PDF, { type: 'text/html' }), reason: 'announcement_pdf_response_invalid' },
+    { response: new Response(null, { status: 302, headers: { location: 'https://evil.example/file.pdf' } }), reason: 'source_response_invalid' },
+    { response: response(Buffer.concat([PDF, Buffer.alloc(1024)]), { type: 'application/pdf' }), reason: 'announcement_pdf_too_large', maxPdfBytes: 512 },
+  ]) {
+    const calls = [];
+    const fetchImpl = fakeFetch([
+      { url: SOURCE_URL, response: response(pageHtml(), { type: 'text/html' }) },
+      { url: DETAIL_URL, response: response(detailJson(`<a href="${ANNOUNCEMENT_PDF_URL}">采购需求9.15.pdf</a>`), { type: 'application/json' }) },
+      { url: ANNOUNCEMENT_PDF_URL, response: fixture.response },
+    ], calls);
+    const result = await createGuizhouSource({ fetchImpl, ...(fixture.maxPdfBytes ? { maxPdfBytes: fixture.maxPdfBytes } : {}) }).recover({ sourceUrl: SOURCE_URL });
+    assert.equal(result.status, 'manual');
+    assert.equal(result.reason, fixture.reason);
   }
 });
 

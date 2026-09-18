@@ -6,6 +6,7 @@ const uuid=v=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 const PREFIX='document-recovery-job:';
 const MAX_PDF_BYTES=20*1024*1024;
+const MONITOR_INTERVAL_MS=15*60*1000;
 function officialUrl(value){try{const u=new URL(value);return u.protocol==='https:'&&u.hostname==='ggzy.guizhou.gov.cn'&&!u.port&&!u.username&&!u.password&&!u.hash&&u.pathname==='/tradeInfo/detailHtml'&&[...u.searchParams.keys()].length===1&&/^\d+$/.test(u.searchParams.get('metaId')??'')?u.href:null;}catch{return null;}}
 function createAppStorage(options,{runImpl=run}={}){
  async function cli(args,{cwd,signal}={}){
@@ -83,17 +84,24 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
    own();const job=list().find(j=>!['attached','manual'].includes(j.stage)&&(!j.nextAt||j.nextAt<=clock()));if(!job)return;
    if(!active(job))return;
    if(['uploading','attaching'].includes(job.stage)){manual(job,job.stage==='uploading'?'document_upload_unknown':'document_attach_unknown');return;}
-   if(['download','downloading'].includes(job.stage)){
+   if(['download','downloading','monitoring'].includes(job.stage)){
+    const wasMonitoring=job.stage==='monitoring';
     save({...job,stage:'downloading'});let result;
-    try{result=await (provider??require('./guizhou-source.cjs').createGuizhouSource({})).recover({sourceUrl:job.sourceUrl,signal});}catch{own();manual(job,'document_download_failed');return;}
+    try{result=await (provider??require('./guizhou-source.cjs').createGuizhouSource({})).recover({sourceUrl:job.sourceUrl,signal});}catch{own();if(wasMonitoring){save({...job,stage:'monitoring',nextAt:clock()+MONITOR_INTERVAL_MS,error:'document_download_failed',updatedAt:clock()});}else manual(job,'document_download_failed');return;}
     if(!active(job))return;
-    if(result?.status!=='obtained'){manual(job,'document_provider_manual');return;}
+    if(!['obtained','partial_obtained'].includes(result?.status)){
+     if(wasMonitoring){save({...job,stage:'monitoring',nextAt:clock()+MONITOR_INTERVAL_MS,error:typeof result?.reason==='string'?result.reason:'document_download_failed',updatedAt:clock()});return;}
+     manual(job,'document_provider_manual');return;
+    }
     if(!Buffer.isBuffer(result.bytes)||result.bytes.length>MAX_PDF_BYTES||result.bytes.subarray(0,5).toString()!=='%PDF-'||hash(result.bytes)!==result.sha256){manual(job,'document_download_invalid');return;}
-    fs.mkdirSync(root,{recursive:true});const sourcePath=path.join(root,result.sha256+'-招标文件正文.pdf');
+    const documentCategory=result.status==='partial_obtained'?'announcement_attachment':'tender_document';
+    if(documentCategory==='announcement_attachment'&&result.officialCategory!=='announcement_attachment'){manual(job,'document_download_invalid');return;}
+    if(wasMonitoring&&documentCategory==='announcement_attachment'&&job.partialSha256===result.sha256){save({...job,stage:'monitoring',nextAt:clock()+MONITOR_INTERVAL_MS,error:null,updatedAt:clock()});return;}
+    fs.mkdirSync(root,{recursive:true});const sourcePath=path.join(root,result.sha256+(documentCategory==='announcement_attachment'?'-公告附件-非完整招标文件.pdf':'-招标文件正文.pdf'));
     if(fs.existsSync(sourcePath)){try{localFile({sourcePath,sha256:result.sha256});}catch{manual(job,'document_local_invalid');return;}}
     else fs.writeFileSync(sourcePath,result.bytes,{flag:'wx'});
-    const next={...job,stage:'downloaded',sourcePath,sha256:result.sha256,updatedAt:clock(),error:null};
-    store.transaction(()=>{save(next);bind(next);});return;
+    const next={...job,stage:'downloaded',documentCategory,sourcePath,sha256:result.sha256,updatedAt:clock(),error:null};delete next.nextAt;
+    store.transaction(()=>{save(next);if(documentCategory==='tender_document')bind(next);});return;
    }
    let sourcePath;try{sourcePath=localFile(job);}catch{manual(job,'document_local_invalid');return;}
    const client=storage??createAppStorage(options);
@@ -108,9 +116,12 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
     let signed;try{signed=await client.sign({remotePath:job.remotePath,signal});}catch{own();save({...job,nextAt:clock()+60000,error:'document_sign_failed'});return;}
     if(!active(job))return;let url;try{url=new URL(signed.url);if(url.protocol!=='https:'||url.username||url.password)throw Error();}catch{manual(job,'document_sign_invalid');return;}
     save({...job,stage:'attaching',updatedAt:clock()});let response;
-    try{response=await (attach??post)({taskId:job.taskId,body:{chatId:config.chatId,manualActionId:job.actionId,actorId:config.operatorIds[0],candidate:{url:url.href,fileName:path.basename(sourcePath),officialCategory:'tender_document'}},signal});}catch{own();manual(job,'document_attach_unknown');return;}
+    try{response=await (attach??post)({taskId:job.taskId,body:{chatId:config.chatId,manualActionId:job.actionId,actorId:config.operatorIds[0],candidate:{url:url.href,fileName:path.basename(sourcePath),officialCategory:job.documentCategory==='announcement_attachment'?'announcement_attachment':'tender_document'}},signal});}catch{own();manual(job,'document_attach_unknown');return;}
     if(!active(job))return;
     const acquired=response?.acquisition;if(!['acquired','duplicate'].includes(acquired?.status)||typeof acquired.documentId!=='string'||!acquired.documentId){manual(job,'document_attach_unknown');return;}
+    if(job.documentCategory==='announcement_attachment'){
+     const next={...job,stage:'monitoring',partialSha256:job.sha256,partialDocumentId:acquired.documentId,partialDocumentVersion:acquired.documentVersion,nextAt:clock()+MONITOR_INTERVAL_MS,updatedAt:clock(),error:null};save(next);return;
+    }
     const next={...job,stage:'attached',documentId:acquired.documentId,documentVersion:acquired.documentVersion,updatedAt:clock(),error:null};store.transaction(()=>{save(next);bind(next);});return;
    }
    manual(job,'document_stage_invalid');

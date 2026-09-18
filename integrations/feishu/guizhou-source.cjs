@@ -10,6 +10,7 @@ const ORIGIN = 'https://ggzy.guizhou.gov.cn';
 const ANNOUNCEMENT_PATH = '/tradeInfo/detailHtml';
 const DETAIL_PATH = '/tradeInfo/detailHtmlData';
 const PACKAGE_PATH = '/hallweb/hall/attach/nosession/download';
+const ANNOUNCEMENT_PDF_HOST = 'gz-gov-open-doc.oss-cn-gz-ysgzlt-d01-a.ltops.gzdata.com.cn';
 const SHA256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 const DEFAULT_LIMITS = Object.freeze({
@@ -142,7 +143,7 @@ function decodeHtml(value) {
     .trim();
 }
 
-function packageCandidates(detail) {
+function sourceCandidate(detail) {
   if (detail?.code !== 1 || !Array.isArray(detail.data) || detail.data.length === 0 || detail.data.length > 100) {
     throw new SourceFailure('detail_response_invalid');
   }
@@ -152,15 +153,49 @@ function packageCandidates(detail) {
     const anchors = item.docHtmlCon.matchAll(/<a\b[^>]*?\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a\s*>/gi);
     for (const match of anchors) {
       const label = decodeHtml(match[3]);
-      if (!/\.ZYZF\s*$/i.test(label)) continue;
       candidates.push({ href: decodeHtml(match[2]), label });
     }
   }
-  if (candidates.length === 0) throw new SourceFailure('package_candidate_missing');
-  if (candidates.length !== 1) throw new SourceFailure('package_candidate_ambiguous');
-  const url = parsePackageUrl(candidates[0].href);
-  if (!url) throw new SourceFailure('package_candidate_invalid');
-  return { url, label: candidates[0].label };
+  const packages = candidates.filter(candidate => /\.ZYZF\s*$/i.test(candidate.label));
+  if (packages.length > 1) throw new SourceFailure('package_candidate_ambiguous');
+  if (packages.length === 1) {
+    const url = parsePackageUrl(packages[0].href);
+    if (!url) throw new SourceFailure('package_candidate_invalid');
+    return { kind: 'package', url, label: packages[0].label };
+  }
+  const pdfs = candidates.filter(candidate => {
+    if (/\.pdf\s*$/i.test(candidate.label)) return true;
+    try {
+      return /\.pdf$/i.test(new URL(candidate.href, ORIGIN).pathname);
+    } catch {
+      return false;
+    }
+  });
+  if (pdfs.length === 0) throw new SourceFailure('package_candidate_missing');
+  if (pdfs.length !== 1) throw new SourceFailure('announcement_pdf_ambiguous');
+  const url = parseAnnouncementPdfUrl(pdfs[0].href);
+  if (!url) throw new SourceFailure('announcement_pdf_invalid');
+  return { kind: 'announcement_pdf', url, label: pdfs[0].label };
+}
+
+function parseAnnouncementPdfUrl(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.hostname !== ANNOUNCEMENT_PDF_HOST ||
+    url.username ||
+    url.password ||
+    url.port ||
+    url.hash ||
+    url.search ||
+    !/\.pdf$/i.test(url.pathname)
+  ) return null;
+  return url;
 }
 
 function decodeHeaderFilename(value) {
@@ -176,6 +211,14 @@ function decodeHeaderFilename(value) {
   const plain = /(?:^|;)\s*filename\s*=\s*(?:"([^"]+)"|([^;]+))/i.exec(value);
   if (!plain) return null;
   const filename = (plain[1] ?? plain[2]).trim();
+  if (/%[0-9a-f]{2}/i.test(filename)) {
+    try {
+      const decoded = decodeURIComponent(filename);
+      if (!decoded.includes('\uFFFD')) return decoded;
+    } catch {
+      return null;
+    }
+  }
   if ([...filename].every(character => character.charCodeAt(0) <= 0xff)) {
     const decoded = Buffer.from(filename, 'latin1').toString('utf8');
     if (!decoded.includes('\uFFFD')) return decoded;
@@ -199,10 +242,18 @@ function tenderFileName(packageFileName) {
   return `${stem || 'tender'}-招标文件正文.pdf`;
 }
 
+function announcementFileName(value) {
+  if (typeof value !== 'string') return null;
+  let filename = value.trim();
+  if (!/\.pdf$/i.test(filename) || filename.length > 220 || /[\\/\u0000-\u001f\u007f]/.test(filename)) return null;
+  filename = filename.replace(/\.pdf$/i, '').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').replace(/[. ]+$/g, '');
+  return `${filename || '采购需求'}-公告附件-非完整招标文件.pdf`;
+}
+
 function validPdf(bytes) {
   return bytes.length >= 10
     && bytes.subarray(0, 5).toString('ascii') === '%PDF-'
-    && bytes.includes(Buffer.from('%%EOF'));
+    && bytes.subarray(Math.max(0, bytes.length - 1024)).includes(Buffer.from('%%EOF'));
 }
 
 function extractZyzfTender({ packageBytes, packageFileName, sourceUrl, provenance = {}, limits: limitOverrides = {} }) {
@@ -363,7 +414,33 @@ function createGuizhouSource(options = {}) {
         if (error instanceof SourceFailure) throw error;
         throw new SourceFailure('detail_response_invalid');
       }
-      const candidate = packageCandidates(detail);
+      const candidate = sourceCandidate(detail);
+      if (candidate.kind === 'announcement_pdf') {
+        const attachmentResponse = await get(candidate.url, 'application/pdf,application/octet-stream', limits.maxPdfBytes, 'announcement_pdf_too_large', signal);
+        const attachmentType = contentType(attachmentResponse.response);
+        if (attachmentType && !['application/pdf', 'application/octet-stream'].includes(attachmentType)) throw new SourceFailure('announcement_pdf_response_invalid');
+        if (!validPdf(attachmentResponse.bytes)) throw new SourceFailure('announcement_pdf_invalid');
+        const headerName = decodeHeaderFilename(attachmentResponse.response.headers?.get?.('content-disposition'));
+        const fileName = announcementFileName(headerName) ?? announcementFileName(candidate.label);
+        if (!fileName) throw new SourceFailure('announcement_pdf_invalid');
+        const attachmentSha256 = SHA256(attachmentResponse.bytes);
+        return {
+          status: 'partial_obtained',
+          bytes: attachmentResponse.bytes,
+          fileName,
+          sha256: attachmentSha256,
+          officialCategory: 'announcement_attachment',
+          sourceUrl: normalizedSourceUrl,
+          provenance: {
+            announcementUrl: normalizedSourceUrl,
+            detailUrl: detailUrl.href,
+            attachmentUrl: candidate.url.href,
+            attachmentSha256,
+            tenderProjectCode: code,
+            announcementType: type,
+          },
+        };
+      }
       const packageResponse = await get(candidate.url, 'application/octet-stream,application/xml,text/xml', limits.maxPackageBytes, 'package_too_large', signal);
       const packageType = contentType(packageResponse.response);
       if (packageType && !['application/octet-stream', 'application/xml', 'text/xml'].includes(packageType)) throw new SourceFailure('package_response_invalid');

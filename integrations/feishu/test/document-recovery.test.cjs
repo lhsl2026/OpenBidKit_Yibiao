@@ -69,3 +69,40 @@ test('seed source identity and replay backfill preserve editing isolation withou
  const existing={...seeded};delete existing.sourceInboxId;store.set('document-recovery-job:'+seeded.id,existing);recovery.queueReceipt(receipt,{inboxId:'source-inbox'});assert.equal(recovery.list()[0].sourceInboxId,'source-inbox');assert.equal(store.listWatches(Infinity).length,0);
  active=true;recovery.seedAttached({...seeded,sourceInboxId:'source-inbox'});assert.equal(store.listWatches(Infinity)[0].payload.sourceInboxId,'source-inbox');
 });
+
+test('partial announcement attachment stays monitored without binding writing source, then upgrades once',async t=>{
+ let now=1000,index=0;const partial=Buffer.from('%PDF-1.7\npublic requirement\n%%EOF'),partialSha=hashBytes(partial),full=Buffer.from('%PDF-1.7\ncomplete tender\n%%EOF'),fullSha=hashBytes(full),categories=[];
+ const results=[
+  {status:'partial_obtained',bytes:partial,fileName:'采购需求-公告附件-非完整招标文件.pdf',sha256:partialSha,sourceUrl,officialCategory:'announcement_attachment'},
+  {status:'partial_obtained',bytes:partial,fileName:'采购需求-公告附件-非完整招标文件.pdf',sha256:partialSha,sourceUrl,officialCategory:'announcement_attachment'},
+  {status:'obtained',bytes:full,fileName:'项目-招标文件正文.pdf',sha256:fullSha,sourceUrl},
+ ];
+ const {recovery,make,store,calls}=setup(t,{clock:()=>now,provider:{recover:async()=>{calls.download++;return results[Math.min(index++,results.length-1)];}},attach:async input=>{calls.attach++;categories.push(input.body.candidate.officialCategory);return {acquisition:{status:'acquired',documentId:'document-'+calls.attach,documentVersion:calls.attach},report:{}};}});
+ recovery.queueReceipt(receipt);
+ await recovery.tick();await make().tick();await make().tick();
+ assert.equal(recovery.list()[0].stage,'monitoring');
+ assert.deepEqual(categories,['announcement_attachment']);
+ assert.equal(store.get('document-source:'+taskId),null);
+ assert.equal(store.listWatches(Infinity).length,0);
+ now=recovery.list()[0].nextAt;await make().tick();
+ assert.equal(recovery.list()[0].stage,'monitoring');assert.equal(calls.upload,1);assert.equal(calls.attach,1);
+ now=recovery.list()[0].nextAt;await make().tick();
+ assert.equal(recovery.list()[0].stage,'downloaded');assert.equal(recovery.list()[0].sha256,fullSha);
+ await make().tick();await make().tick();
+ assert.equal(recovery.list()[0].stage,'attached');
+ assert.deepEqual(categories,['announcement_attachment','tender_document']);
+ assert.equal(store.get('document-source:'+taskId).sha256,fullSha);
+ assert.equal(calls.upload,2);assert.equal(calls.attach,2);
+});
+
+test('monitoring retries provider reads only and never repeats a partial remote write',async t=>{
+ let now=1000,index=0;const partial=Buffer.from('%PDF-1.7\npublic requirement\n%%EOF'),partialSha=hashBytes(partial);
+ const sequence=[{status:'partial_obtained',bytes:partial,fileName:'采购需求-公告附件-非完整招标文件.pdf',sha256:partialSha,sourceUrl,officialCategory:'announcement_attachment'},{status:'manual',reason:'source_request_failed',sourceUrl}];
+ const {recovery,make,calls}=setup(t,{clock:()=>now,provider:{recover:async()=>{calls.download++;return sequence[Math.min(index++,sequence.length-1)];}}});
+ recovery.queueReceipt(receipt);await recovery.tick();await make().tick();await make().tick();
+ now=recovery.list()[0].nextAt;await make().tick();
+ assert.equal(recovery.list()[0].stage,'monitoring');assert.equal(recovery.list()[0].error,'source_request_failed');
+ assert.equal(calls.upload,1);assert.equal(calls.attach,1);
+});
+
+function hashBytes(value){return createHash('sha256').update(value).digest('hex');}
