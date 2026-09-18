@@ -17,6 +17,8 @@ test('pending handoff stays on persistent watch, errors do not drop it',async()=
 
 test('watch attempts count consecutive failures, back off, and reset after a successful poll',()=>{const store=createStore(':memory:');store.watch('t',{companyId:'c'});store.deferWatch('t',0,'handoff_unavailable');let row=store.getWatch('t');assert.equal(row.attempts,1);assert.equal(row.next_at,60000);store.deferWatch('t',60000,'handoff_unavailable');row=store.getWatch('t');assert.equal(row.attempts,2);assert.equal(row.next_at,180000);store.deferWatch('t',180000);row=store.getWatch('t');assert.equal(row.attempts,0);assert.equal(row.last_error,null);assert.equal(row.next_at,240000);store.close();});
 
+test('persistent handoff failures keep a bounded operational counter',()=>{const store=createStore(':memory:');store.watch('t',{companyId:'c'});for(let attempt=0;attempt<40;attempt++)store.deferWatch('t',attempt*900000,'handoff_unavailable');assert.equal(store.getWatch('t').attempts,16);store.close();});
+
 test('real preread parser receives text lines instead of the Feishu JSON envelope',async()=>{
  let received;const c=createPrereadClient({baseUrl:'http://localhost',apiKey:'k',relayAuthorization:'Bearer relay',fetchImpl:async(_,o)=>{received=JSON.parse(o.body);return{ok:true,json:async()=>({status:'ignored'})};}});
  await c.receiveRadar({messageType:'text',content:JSON.stringify({text:'今日优先看：\n1. 重点关注｜90分｜项目'})});

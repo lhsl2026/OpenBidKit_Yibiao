@@ -76,9 +76,9 @@ function createStore(file) {
     unwatch(taskId){db.prepare('DELETE FROM watches WHERE task_id=?').run(taskId);},
     deferWatch(taskId,now,error){
       if(!error){db.prepare('UPDATE watches SET next_at=?,attempts=0,last_error=NULL WHERE task_id=?').run(now+60000,taskId);return;}
-      const attempts=db.prepare('SELECT attempts FROM watches WHERE task_id=?').get(taskId)?.attempts??0;
+      const attempts=Math.min(db.prepare('SELECT attempts FROM watches WHERE task_id=?').get(taskId)?.attempts??0,15);
       const delay=Math.min(15*60000,60000*2**Math.min(attempts,4));
-      db.prepare('UPDATE watches SET next_at=?,attempts=attempts+1,last_error=? WHERE task_id=?').run(now+delay,error,taskId);
+      db.prepare('UPDATE watches SET next_at=?,attempts=?,last_error=? WHERE task_id=?').run(now+delay,attempts+1,error,taskId);
     },
     set(key,value){db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(value));},
     get(key){const r=db.prepare('SELECT value FROM settings WHERE key=?').get(key);return r?JSON.parse(r.value):null;},
