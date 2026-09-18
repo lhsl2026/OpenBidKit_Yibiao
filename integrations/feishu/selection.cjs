@@ -18,7 +18,7 @@ function initialCard(state){
 }
 
 function resultCard(status,count){
- const states={selected:['已提交所选项目','green','所选项目已进入预读；后续结果会通过项目卡片呈现。'],declined:['本批项目已关闭','grey','本批待选项目不会开始预读。'],waiting:['请求仍在处理中','yellow','服务仍在处理本次请求，请人工核对处理状态。'],failed:['提交状态待核对','red','服务未确认执行本次请求，请人工核对处理状态。'],edited:['来源消息已编辑','orange','原选择卡已失效，请核对编辑后的来源消息。']};
+ const states={selected:['已提交所选项目','green','所选项目已进入预读；后续结果会通过项目卡片呈现。'],declined:['本批项目已关闭','grey','本批待选项目不会开始预读。'],waiting:['请求仍在处理中','yellow','服务仍在处理本次请求，请人工核对处理状态。'],failed:['提交状态待核对','red','服务未确认执行本次请求，请人工核对处理状态。'],stale:['选择卡已失效','orange','项目清单或投递群已发生变化，本次没有启动预读。请使用最新选择卡；如没有新卡，请联系管理员刷新。'],edited:['来源消息已编辑','orange','原选择卡已失效，请核对编辑后的来源消息。']};
  const [title,template,message]=states[status]??states.failed;
  const outcome=['selected','declined'].includes(status)?'未选择的项目将关闭；预读结果仍需人工判断。':'处理状态确认前，请勿据此判断项目是否已关闭。';
  return {schema:'2.0',config:{update_multi:true,width_mode:'default',enable_forward:false},header:{title:{tag:'plain_text',content:title},template},body:{direction:'vertical',vertical_spacing:'12px',padding:'12px',elements:[{tag:'markdown',content:`**处理状态**\n${message}`},{tag:'markdown',content:`本批共 ${count} 个待确认项目。`},{tag:'markdown',content:outcome}]}};
@@ -29,15 +29,17 @@ function createSelection({store,config,preread,onReceipt,clock=Date.now,assertOw
  function queue(receipt,meta){
   if(receipt?.status!=='processed')return null;
   if(typeof receipt.messageId!=='string'||!receipt.messageId||!Array.isArray(receipt.projects)||!Array.isArray(receipt.results))return null;
-  const projects=[],waiting=[];
+  const projects=[],waiting=[];let deliveryMismatch=false;
   for(let i=0;i<receipt.results.length;i++){
    const result=receipt.results[i],project=receipt.projects[i];
    if(result?.status!=='waiting_confirmation')continue;
    waiting.push(i);
    if(!uuid(result.eventId)||!project||Array.isArray(project)||typeof project!=='object'||project.sourceMessageId!==receipt.messageId||typeof project.title!=='string'||!project.title.trim())continue;
+   if(project.deliveryTarget?.targetType==='chat'&&project.deliveryTarget.targetId!==config.chatId)deliveryMismatch=true;
    projects.push({eventId:result.eventId,title:project.title.trim(),...(typeof project.budgetText==='string'&&project.budgetText.trim()?{budgetText:project.budgetText.trim()}:{}),...(typeof project.deadlineText==='string'&&project.deadlineText.trim()?{deadlineText:project.deadlineText.trim()}:{})});
   }
   if(!waiting.length)return null;
+  if(deliveryMismatch){const manualKey=sha(JSON.stringify(['selection-delivery-mismatch',receipt.messageId]));const state={status:'manual',reason:'selection_delivery_target_mismatch',targetChatId:config.chatId,batchMessageId:receipt.messageId,sourceInboxId:meta?.inboxId??null,createdAt:clock()};store.set('selection-manual:'+manualKey.slice(0,40),state);return state;}
   if(projects.length!==waiting.length||projects.length>100||new Set(projects.map(project=>project.eventId)).size!==projects.length){
    const manualKey=sha(JSON.stringify(['selection-manual',receipt.messageId]));const state={status:'manual',reason:'selection_mapping_invalid',targetChatId:config.chatId,batchMessageId:receipt.messageId,sourceInboxId:meta?.inboxId??null,createdAt:clock()};store.set('selection-manual:'+manualKey.slice(0,40),state);return state;
   }
@@ -81,7 +83,7 @@ function createSelection({store,config,preread,onReceipt,clock=Date.now,assertOw
   const {recordReceipt}=require('./receipt.cjs');let inspected;
   inspected=recordReceipt({store,inboxId:'selection-'+event.eventId,sourceInboxId:state.sourceInboxId??'selection-'+event.eventId,response,companyId:config.companyId,now:clock(),onReceipt:(saved,meta)=>{
    const status=meta.inspected.pending?'retryable':'completed';store.set(actionKey,{hash,status,payload,result:saved,updatedAt:clock()});
-   const next=meta.inspected.pending?'waiting':saved.status==='selection_rejected'?'failed':value.action==='decline'?'declined':'selected';updateCard(state,next);store.set('selection:'+state.batchKey,{...state,status:next,activeEventId:event.eventId,lastResult:saved,updatedAt:clock()});
+   const next=meta.inspected.pending?'waiting':saved.status==='selection_rejected'?(saved.selection?.reason==='stale_selection_card'?'stale':'failed'):value.action==='decline'?'declined':'selected';updateCard(state,next);store.set('selection:'+state.batchKey,{...state,status:next,activeEventId:event.eventId,lastResult:saved,updatedAt:clock()});
    if(onReceipt)onReceipt(saved,meta);
   }});
   void inspected;return response;
@@ -94,7 +96,7 @@ function createSelection({store,config,preread,onReceipt,clock=Date.now,assertOw
   if(saved?.status==='completed')return saved.result;
   if(state.status==='edited'||(state.sourceInboxId&&!isSourceInboxActive(store,state.sourceInboxId)))throw Error('selection_source_edited');
   const current=store.get('selection:'+state.batchKey);
-  if(['selected','declined','edited','failed'].includes(current.status)||(['submitting','uncertain','waiting'].includes(current.status)&&current.activeEventId&&current.activeEventId!==event.eventId))throw Error('selection_batch_closed');
+  if(['selected','declined','edited','failed','stale'].includes(current.status)||(['submitting','uncertain','waiting'].includes(current.status)&&current.activeEventId&&current.activeEventId!==event.eventId))throw Error('selection_batch_closed');
   if(inFlight.has(event.eventId))return inFlight.get(event.eventId);
   const task=perform(value,event,payload,state,hash).finally(()=>inFlight.delete(event.eventId));inFlight.set(event.eventId,task);return task;
  }

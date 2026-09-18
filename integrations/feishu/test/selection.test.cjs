@@ -83,6 +83,19 @@ test('an incomplete waiting-project mapping makes the whole batch manual with no
  const broken={...receipt,projects:[receipt.projects[0]]};const result=selection.queue(broken,{inboxId:'source'});assert.equal(result.status,'manual');assert.equal(store.listOutbox(Infinity).length,0);
 });
 
+test('a receipt for another delivery chat is held for manual repair instead of sending a broken card',t=>{
+ const store=createStore(':memory:');t.after(()=>store.close());const selection=createSelection({store,config:{chatId:'oc_target',operatorIds:['ou_allowed'],companyId:'company'},preread:{select:()=>assert.fail('posted')}});
+ const mismatched={...receipt,projects:receipt.projects.map(project=>({...project,deliveryTarget:{targetType:'chat',targetId:'oc_old'}}))};
+ const result=selection.queue(mismatched,{inboxId:'source'});assert.equal(result.status,'manual');assert.equal(result.reason,'selection_delivery_target_mismatch');assert.equal(store.listOutbox(Infinity).length,0);
+});
+
+test('a stale upstream selection response tells employees to use a refreshed card',async t=>{
+ const {store,selection,state}=setup(t,async()=>({status:'selection_rejected',selection:{status:'rejected',reason:'stale_selection_card'}}));
+ await selection.act(value(state),event('stale-upstream',[ids[0]]));
+ const card=JSON.parse(store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(state.outboxId).payload);
+ assert.equal(card.header.title.content,'选择卡已失效');assert.match(JSON.stringify(card),/本次没有启动预读/);assert.match(JSON.stringify(card),/最新选择卡/);
+});
+
 test('more than one hundred waiting projects makes the whole batch manual',t=>{
  const store=createStore(':memory:');t.after(()=>store.close());const selection=createSelection({store,config:{chatId:'oc_target',operatorIds:['ou_allowed'],companyId:'company'},preread:{select:()=>assert.fail('posted')}});
  const many=Array.from({length:101},(_,i)=>`00000000-0000-4000-8000-${String(i).padStart(12,'0')}`),large={status:'processed',messageId:'om_many',projects:many.map((_,i)=>({sourceMessageId:'om_many',title:'项目'+i})),results:many.map(eventId=>({status:'waiting_confirmation',eventId}))};
