@@ -10,7 +10,7 @@ const writingPortalButton=()=>({tag:'button',type:'default',text:{tag:'plain_tex
 function baseCard(title,template,elements){return{schema:'2.0',config:{update_multi:true,width_mode:'default',enable_forward:false},header:{title:{tag:'plain_text',content:title.slice(0,120)},template},body:{direction:'vertical',vertical_spacing:'12px',padding:'12px',elements}};}
 function buildCard(p,writing,page=0,options={}){
   const h=p.input.handoff,a=p.assessment,decision=a.decision;const cardKey=require('./store.cjs').key(p.input,p.assessment);
-  const button=(action,text,type='default',disabled=false)=>({tag:'button',type,text:{tag:'plain_text',content:text},disabled,behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action}}]});
+  const button=(action,text,type='default',disabled=false,width)=>({tag:'button',type,text:{tag:'plain_text',content:text},disabled,...(width?{width}:{}),behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action}}]});
   const brief=buildDecisionBrief(p,options);
   const links=[];for(const [name,url] of [['预读报告',p.input.reportUrl],['招标原文件',p.input.sourceUrl]]){try{const u=new URL(url);if(u.protocol==='https:'&&!u.username&&!u.password)links.push({tag:'button',text:{tag:'plain_text',content:name},behaviors:[{type:'open_url',default_url:u.href}]});}catch{}}
   const writingText=writing?`\n编写进度：${escapeText(({queued:'排队中',running:'处理中',not_ready:'配置未就绪',waiting_confirmation:'等待确认',completed:'初稿已生成',failed:'失败，待处理',interrupted:'上次运行中断，请核对后重试',cancelled:'已取消'})[writing.status]??writing.status)}`:'';
@@ -29,12 +29,14 @@ function buildCard(p,writing,page=0,options={}){
   const bullet=values=>values.map(value=>'• '+escapeText(value)).join('\n');
   const draftReady=canGenerateDraft(p,options.now??Date.now());
   const draftLabel=decision==='review'?'生成待补初稿':'生成标书初稿';
+  const decisionStatus=human[p.humanDecision]??'等待员工判断';
+  const decisionStyle={follow:['✅','green-50'],defer:['⏸️','orange-50'],decline:['⛔','red-50']}[p.humanDecision]??['🟠','orange-50'];
   return baseCard(`${label[decision]??label.review} · ${h.task.title}`,decision==='follow'?'green':decision==='reject'?'red':'orange',[
     group([md(`**${escapeText(brief.title)}**\n判标主体：${escapeText(brief.company)}\n**资格结论：${escapeText(brief.eligibility)}**\n**商务判断：${escapeText(brief.commercial)}**\n投标截止：${escapeText(brief.deadline)}`)],decision==='follow'?'green-50':decision==='reject'?'red-50':'orange-50'),
+    group([md(`**📌 处理决定**\n${decisionStyle[0]} **${decisionStatus}**`),button('follow','确认跟进','primary_filled',false,'fill'),button('defer','暂缓','default',false,'fill'),button('decline','不投','danger',false,'fill')],decisionStyle[1]),
     group([md(`**一票否决检查**\n🔴 明确不满足 ${brief.gateCounts.notSatisfied}\n🟠 待核验 ${brief.gateCounts.review}\n🟢 已核验满足 ${brief.gateCounts.satisfied}\n\n**关键参数**\n${bullet(brief.facts.map(fact=>`${fact.label}：${fact.value}`))}`)]),
     group([md(`**主要风险**\n${bullet(brief.risks)}\n\n**下一步（最多3项）**\n${bullet(brief.actions)}`)]),
-    group([md(`处理决定：${human[p.humanDecision]??'等待员工判断'}${writingText}\n文件版本：${escapeText(p.version)}；结论含待核实项时，不能视为已具备投标资格。`),...links]),
-    group([button('follow','确认跟进','primary_filled'),button('defer','暂缓'),button('decline','不投','danger'),button('write',draftLabel,'default',!draftReady),writingPortalButton(),...writingElements])
+    group([md(`**辅助信息**${writingText}\n文件版本：${escapeText(p.version)}；结论含待核实项时，不能视为已具备投标资格。`),...links,button('write',draftLabel,'default',!draftReady),writingPortalButton(),...writingElements])
   ]);
 }
 function buildSummary(day,projects,watches=0){const rows=[['新增标讯',projects.filter(p=>new Date(p.created+8*3600000).toISOString().slice(0,10)===day).length],['已预读',projects.length],['待补件或核实',projects.filter(p=>p.assessment.decision==='review').length+watches],['待决策',projects.filter(p=>!p.humanDecision).length],['临近截止',projects.filter(p=>{const n=Date.parse(p.input.deadline)-Date.parse(day+'T00:00:00+08:00');return n>=0&&n<3*86400000;}).length]];return baseCard(`判标日报 · ${day}`,'blue',[group(rows.map(([k,v])=>md(`**${k}**　${v}`)),'blue-50'),md('请在对应项目卡片确认跟进、暂缓或不投。未核实资料不计为已满足。')]);}

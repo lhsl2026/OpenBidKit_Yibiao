@@ -8,6 +8,23 @@ test('decision card exposes a desktop Yibiao entry with a web fallback',()=>{
  const portal=card.body.elements.flatMap(element=>element.columns?.[0]?.elements||[]).find(element=>element.text?.content==='生成其他标书');
  assert.deepEqual(portal.behaviors,[{type:'open_url',default_url:'https://yibiao.pro',pc_url:'yibiao://new-bid'}]);
 });
+test('decision card puts a status-coloured employee decision block and its actions before risk details',()=>{
+ const base={id:'p',version:'v1',companyId:'公司',input:{handoff:{task:{title:'测试项目'},requirements:[]}},assessment:{decision:'review',blockers:[],actions:[]}};
+ for(const [humanDecision,status,color] of [[null,'等待员工判断','orange-50'],['follow','已确认跟进','green-50'],['defer','暂缓','orange-50'],['decline','不投','red-50']]){
+  const card=buildCard({...base,humanDecision});
+  const groups=card.body.elements;
+  const decisionIndex=groups.findIndex(group=>JSON.stringify(group).includes('📌 处理决定'));
+  const riskIndex=groups.findIndex(group=>JSON.stringify(group).includes('主要风险'));
+  assert.equal(decisionIndex,1);
+  assert.ok(riskIndex>decisionIndex);
+  assert.equal(groups.length,5);
+  assert.equal(groups[decisionIndex].background_style,color);
+  assert.match(JSON.stringify(groups[decisionIndex]),new RegExp(status));
+  const actions=groups[decisionIndex].columns[0].elements.filter(element=>element.tag==='button');
+  assert.deepEqual(actions.map(action=>action.text.content),['确认跟进','暂缓','不投']);
+  assert.ok(actions.every(action=>action.width==='fill'));
+ }
+});
 test('followed projects with evidence gaps expose a placeholder draft action',()=>{
  const p={id:'p',version:'v1',companyId:'隆创信息有限公司',input:{deadline:'2026-10-09T09:30:00+08:00',handoff:{status:'ready',superseded:false,warnings:[],task:{title:'测试项目'},requirements:[]}},assessment:{decision:'review',blockers:['q-license:structured_rule_missing'],actions:['request_verification'],items:[{requirementId:'q-license',category:'qualification',status:'review',reasons:['structured_rule_missing']}]},humanDecision:'follow',current:true};
  const card=buildCard(p,null,0,{now:Date.parse('2026-09-17T12:00:00+08:00')});
