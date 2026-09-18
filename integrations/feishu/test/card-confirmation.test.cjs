@@ -19,3 +19,12 @@ test('a legacy TXT delivery marker cannot enable online document confirmation', 
   const buttons = card.body.elements.flatMap(group => group.columns?.flatMap(column => column.elements ?? []) ?? []).filter(element => element.tag === 'button');
   assert.equal(buttons.find(button => button.text?.content === '确认以上内容并继续')?.disabled, true);
 });
+
+test('recoverable writing failures show a precise Chinese retry action', () => {
+  const p = { id: 'p', version: '1', checksum: 'a', humanDecision: 'follow', input: { deadline: '2099-01-01', handoff: { task: { title: '项目' }, status: 'ready', superseded: false, warnings: [], requirements: [] } }, assessment: { decision: 'follow', items: [], blockers: [] } };
+  const labels = writing => JSON.stringify(buildCard(p, writing, 0, { now: 1 }));
+  assert.match(labels({ status: 'interrupted', result: { code: 'worker_timeout' } }), /继续生成未完成内容/);
+  assert.match(labels({ status: 'not_ready', result: { code: 'model_not_configured' } }), /配置模型后重试/);
+  assert.match(labels({ status: 'failed', result: { code: 'worker_process_failed' } }), /重新尝试生成/);
+  assert.doesNotMatch(labels({ status: 'interrupted', result: { code: 'worker_timeout' } }), /修复配置后重试/);
+});

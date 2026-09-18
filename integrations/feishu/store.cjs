@@ -74,7 +74,12 @@ function createStore(file) {
     listWatchesBySource(sourceInboxId){return db.prepare('SELECT * FROM watches ORDER BY task_id').all().map(r=>({...r,payload:JSON.parse(r.payload)})).filter(r=>r.payload.sourceInboxId===sourceInboxId);},
     countPendingWatches(companyId){return db.prepare('SELECT COUNT(*) AS count FROM watches w WHERE NOT EXISTS (SELECT 1 FROM projects p WHERE p.task=w.task_id AND p.company=? AND p.current=1)').get(companyId??'').count;},
     unwatch(taskId){db.prepare('DELETE FROM watches WHERE task_id=?').run(taskId);},
-    deferWatch(taskId,now,error){db.prepare('UPDATE watches SET next_at=?,attempts=attempts+1,last_error=? WHERE task_id=?').run(now+60000,error??null,taskId);},
+    deferWatch(taskId,now,error){
+      if(!error){db.prepare('UPDATE watches SET next_at=?,attempts=0,last_error=NULL WHERE task_id=?').run(now+60000,taskId);return;}
+      const attempts=db.prepare('SELECT attempts FROM watches WHERE task_id=?').get(taskId)?.attempts??0;
+      const delay=Math.min(15*60000,60000*2**Math.min(attempts,4));
+      db.prepare('UPDATE watches SET next_at=?,attempts=attempts+1,last_error=? WHERE task_id=?').run(now+delay,error,taskId);
+    },
     set(key,value){db.prepare('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(value));},
     get(key){const r=db.prepare('SELECT value FROM settings WHERE key=?').get(key);return r?JSON.parse(r.value):null;},
     receiveRadar(id,payload){const raw=JSON.stringify(payload);const r=db.prepare('SELECT payload FROM inbox WHERE id=?').get(id);if(r){const saved=JSON.parse(r.payload);if(['chatId','messageId','messageType'].some(k=>saved[k]!==payload[k]))throw Error('radar_conflict');return;}db.prepare('INSERT INTO inbox(id,payload) VALUES(?,?)').run(id,raw);},

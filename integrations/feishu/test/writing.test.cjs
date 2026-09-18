@@ -3,6 +3,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 
 const { prepareWritingJob, runWritingJob } = require('../writing.cjs');
 
@@ -217,6 +219,27 @@ test('does not spawn a writing worker after its lease signal is already aborted'
   assert.equal(result.code, 'worker_interrupted');
 });
 
+test('worker timeout is a resumable interruption because workspace checkpoints are retained', async (t) => {
+  const { workspaceRoot, sourcePath } = createFixture(t);
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.kill = () => true;
+  const result = await runWritingJob({
+    job: makeJob(sourcePath),
+    root: workspaceRoot,
+    electronPath: process.execPath,
+    clientRoot: workspaceRoot,
+    modelConfig: { provider: 'custom', api_key: 'test', base_url: 'http://127.0.0.1:1/v1', model_name: 'test' },
+    timeoutMs: 20,
+    spawnImpl: () => child,
+  });
+  assert.equal(result.status, 'interrupted');
+  assert.equal(result.code, 'worker_timeout');
+  assert.match(result.message, /已保留/);
+});
+
 test('aborts an in-flight Electron worker and returns a bounded interrupted result', { timeout: 30_000 }, async (t) => {
   const { workspaceRoot, sourcePath } = createFixture(t);
   const clientRoot = path.resolve(__dirname, '..', '..', '..', 'client');
@@ -385,6 +408,31 @@ test('content stage waits on the current outline challenge without changing the 
   assert.equal(approvedContent.status, 'waiting_confirmation');
   assert.equal(approvedContent.stage, 'content');
   assert.equal(approvedContent.code, 'global_facts_confirmation_required');
+
+  const mutableOutlineDatabase = new DatabaseSync(path.join(prepared.paths.workspace, 'yibiao.sqlite'));
+  mutableOutlineDatabase.prepare(`UPDATE technical_plan_outline_nodes
+    SET content=?, updated_at=? WHERE node_id=?`).run('正文生成过程中保存的阶段性内容', timestamp, '1');
+  mutableOutlineDatabase.prepare(`INSERT INTO technical_plan_content_sections
+    (node_id,status,error,updated_at) VALUES (?,?,?,?)`).run('1', 'success', null, timestamp);
+  mutableOutlineDatabase.close();
+  fs.writeFileSync(path.join(prepared.paths.projectDir, 'confirmations.json'), JSON.stringify({ outline: 'legacy-outline-challenge' }));
+  const afterContentCheckpoint = await runWritingJob({
+    job: {
+      ...base,
+      stage: 'content',
+      confirmations: { outlineApproval: { challenge: 'legacy-outline-challenge', approved: true } },
+    },
+    root: workspaceRoot,
+    electronPath,
+    clientRoot,
+    modelConfig,
+  });
+  assert.equal(afterContentCheckpoint.code, 'global_facts_confirmation_required');
+  assert.equal(afterContentCheckpoint.confirmation.type, 'global_facts');
+  const checkpointCleanupDatabase = new DatabaseSync(path.join(prepared.paths.workspace, 'yibiao.sqlite'));
+  checkpointCleanupDatabase.prepare('DELETE FROM technical_plan_content_sections WHERE node_id=?').run('1');
+  checkpointCleanupDatabase.close();
+
   fs.writeFileSync(
     path.join(prepared.paths.projectDir, 'confirmations.json'),
     JSON.stringify({ outline: outlineResult.confirmation.challenge, globalFacts: approvedContent.confirmation.challenge }),

@@ -31,6 +31,17 @@ function challengeFor(prepared, stage, type, value) {
   })));
 }
 
+function outlineConfirmationValue(outlineData) {
+  const projectName = String(outlineData?.project_name || outlineData?.projectName || '');
+  const visit = items => (Array.isArray(items) ? items : []).map(item => ({
+    id: String(item?.id ?? item?.node_id ?? ''),
+    title: String(item?.title ?? item?.name ?? ''),
+    description: String(item?.description ?? ''),
+    children: visit(item?.children),
+  }));
+  return { projectName, outline: visit(outlineData?.outline) };
+}
+
 function inside(root, candidate) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
@@ -273,7 +284,7 @@ function outlineApprovalResult(outlineData) {
     message: '完整目录已生成，等待人工确认',
     confirmation: {
       type: 'outline',
-      challenge: challengeFor(input.prepared, 'outline', 'outline', outlineData),
+      challenge: challengeFor(input.prepared, 'outline', 'outline', outlineConfirmationValue(outlineData)),
       outlineData,
     },
   });
@@ -415,7 +426,13 @@ async function contentStage(services) {
   const outlineWait = outlineApprovalResult(state.outlineData);
   const outlineApproval = input.job?.confirmations?.outlineApproval;
   const approvals = loadApprovals();
-  const outlineApproved = approvals.outline === outlineWait.confirmation.challenge
+  const legacyCheckpointApproved = Boolean(Object.keys(state.contentGenerationSections || {}).length)
+    && typeof approvals.outline === 'string'
+    && approvals.outline.length > 0
+    && outlineApproval?.approved === true
+    && outlineApproval.challenge === approvals.outline;
+  const outlineApproved = legacyCheckpointApproved
+    || approvals.outline === outlineWait.confirmation.challenge
     || (outlineApproval?.approved === true && outlineApproval.challenge === outlineWait.confirmation.challenge);
   if (!outlineApproved) return { ...outlineWait, stage: 'content' };
   if (approvals.outline !== outlineWait.confirmation.challenge) {

@@ -21,7 +21,11 @@ function buildCard(p,writing,page=0,options={}){
     if(c.challenge&&p.input.writingConfirmation?.challenge===c.challenge){try{const u=new URL(p.input.writingConfirmationUrl);if(u.protocol==='https:'&&!u.username&&!u.password)writingElements.push({tag:'button',type:'default',text:{tag:'plain_text',content:'查看确认文档'},behaviors:[{type:'open_url',default_url:u.href}]});}catch{}}
     if(c.challenge&&['outline_selection','outline','global_facts','content_decision'].includes(c.type))writingElements.push({tag:'button',type:'primary_filled',disabled:!writing.confirmationPublished,text:{tag:'plain_text',content:c.type==='global_facts'?'保留待补项，继续生成':c.type==='content_decision'?'重试失败小节':'确认以上内容并继续'},behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action:'continue',challenge:c.challenge}}]});
   }
-  if(['failed','not_ready','interrupted'].includes(writing?.status))writingElements.push(button('retry','修复配置后重试'));
+  if(['failed','not_ready','interrupted'].includes(writing?.status)){
+    const code=writing?.result?.code;
+    const retryLabel=code==='worker_timeout'?'继续生成未完成内容':writing.status==='interrupted'?'继续生成':code==='model_not_configured'?'配置模型后重试':'重新尝试生成';
+    writingElements.push(button('retry',retryLabel));
+  }
   const bullet=values=>values.map(value=>'• '+escapeText(value)).join('\n');
   const draftReady=canGenerateDraft(p,options.now??Date.now());
   const draftLabel=decision==='review'?'生成待补初稿':'生成标书初稿';

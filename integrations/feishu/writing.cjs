@@ -264,7 +264,7 @@ function resolveTextModel(modelConfig) {
   return { provider, profile };
 }
 
-async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig, signal, timeoutMs }) {
+async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig, signal, timeoutMs, spawnImpl = spawn }) {
   const stage = allowedStages.has(job?.stage) ? job.stage : String(job?.stage || 'prepare');
   if (signal?.aborted) {
     return { status: 'failed', stage, code: 'worker_interrupted', message: '易标编写 Worker 已中断' };
@@ -309,7 +309,7 @@ async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig,
     let stdout = '';
     let settled = false;
     let timeout;
-    const child = spawn(executable, [workerPath], {
+    const child = spawnImpl(executable, [workerPath], {
       cwd: resolvedClientRoot,
       env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -322,10 +322,10 @@ async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig,
       signal?.removeEventListener?.('abort', onAbort);
       resolve(result);
     };
-    const stop = (code, message) => {
+    const stop = (code, message, status = 'failed') => {
       if (settled) return;
       try { child.kill(); } catch {}
-      finish({ status: 'failed', stage, code, message });
+      finish({ status, stage, code, message });
     };
     const onAbort = () => stop('worker_interrupted', '易标编写 Worker 已中断');
     signal?.addEventListener?.('abort', onAbort, { once: true });
@@ -335,7 +335,7 @@ async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig,
       Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : 30 * 60 * 1000,
     );
     timeout = setTimeout(
-      () => stop('worker_timeout', '易标编写 Worker 执行超时'),
+      () => stop('worker_timeout', '本轮生成达到时限，已保留完成内容，可继续生成未完成部分', 'interrupted'),
       boundedTimeoutMs,
     );
     timeout.unref?.();
