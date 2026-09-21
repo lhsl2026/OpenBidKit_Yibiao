@@ -97,7 +97,7 @@ async function cleanupRecorded({ dataRoot, mainPath, supervisorPath, executable 
     fs.unlinkSync(pidFile); return { ok: true };
   } finally { await new Promise(resolve => lock.close(resolve)); }
 }
-function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs'), healthUrl, startupGraceMs = 90000, pollMs = 5000, restartDelayMs = 3000, probeTimeoutMs = 3000, stopGraceMs = 15000 }) {
+function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs'), healthUrl, startupGraceMs = 90000, pollMs = 5000, restartDelayMs = 3000, probeTimeoutMs = 3000, stopGraceMs = 15000, stopChild = stopVerified }) {
   if (!Number.isFinite(startupGraceMs) || startupGraceMs < 70000) throw Error('startup_grace_too_short');
   for (const n of [pollMs, restartDelayMs, probeTimeoutMs, stopGraceMs]) if (!Number.isFinite(n) || n < 20) throw Error('supervisor_timing_invalid');
   const root = canonicalRoot(dataRoot), entry = fs.realpathSync.native(entryPath), supervisorPath = fs.realpathSync.native(process.argv[1]);
@@ -124,6 +124,17 @@ function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs
     socket.on('error', () => {});
   });
   async function pause(ms) { if (stopping) return; await new Promise(resolve => { const timer = setTimeout(done, ms); function done() { clearTimeout(timer); wake.signal.removeEventListener('abort', done); resolve(); } wake.signal.addEventListener('abort', done, { once: true }); }); }
+  async function stopForRestart(pid, birth) {
+    while (true) {
+      try { await stopChild(pid, birth, process.execPath, entry, stopGraceMs); return; }
+      catch (error) {
+        event('child_stop_uncertain');
+        if (stopping) throw error;
+        await pause(restartDelayMs);
+        if (stopping) throw error;
+      }
+    }
+  }
   async function monitor(child, exited) {
     const since = Date.now(); let healthy = false, failures = 0;
     while (!stopping && child.exitCode === null && child.signalCode === null) {
@@ -150,7 +161,7 @@ function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs
         const orphan = await processIdentity(old.childPid);
         if (orphan) {
           if (!old.childBirth || orphan.birth !== old.childBirth || !matchesEntry(orphan, process.execPath, entry)) throw Error('orphan_identity_uncertain');
-          await stopVerified(old.childPid, old.childBirth, process.execPath, entry, stopGraceMs);
+          await stopChild(old.childPid, old.childBirth, process.execPath, entry, stopGraceMs);
         }
       }
       owner = { schema: 1, instance, pid: process.pid, birth: self.birth, executable: process.execPath, supervisorPath, dataRoot: root, childPath: entry, childPid: null, childBirth: null };
@@ -170,7 +181,7 @@ function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs
         owner.childBirth = identity?.birth ?? null; persist(); event('child_started');
         const reason = identity ? await monitor(child, exited) : 'child_spawn_failed';
         event(reason);
-        if (child.exitCode === null && child.signalCode === null && identity) await stopVerified(child.pid, identity.birth, process.execPath, entry, stopGraceMs);
+        if (child.exitCode === null && child.signalCode === null && identity) await stopForRestart(child.pid, identity.birth);
         await exited; currentChild = null;
         owner.childPid = null; owner.childBirth = null; persist(); event('child_exit_confirmed');
         if (!stopping) await pause(restartDelayMs);

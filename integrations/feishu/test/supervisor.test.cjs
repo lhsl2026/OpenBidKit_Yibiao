@@ -22,12 +22,14 @@ let overlap=false;if(old)try{process.kill(old.pid,0);overlap=true;}catch{}
 fs.appendFileSync(f,JSON.stringify({type:'start',pid:process.pid,overlap})+'\\n');
 http.createServer((req,res)=>{let bad=false;try{bad=fs.readFileSync(process.env.BAD_FILE,'utf8')===String(process.pid);}catch{}res.statusCode=req.url==='/ready'?503:bad?503:200;res.end('{}');}).listen(Number(process.env.HELPER_PORT),'127.0.0.1');
 `);
-  fs.writeFileSync(harness, `const {createSupervisor}=require(${JSON.stringify(supervisorPath)});const fs=require('node:fs');
-const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));const supervisor=createSupervisor(config);
+  fs.writeFileSync(harness, `const api=require(${JSON.stringify(supervisorPath)});const fs=require('node:fs');
+const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+if(config.failFirstStop){let calls=0;config.stopChild=async(...args)=>{fs.appendFileSync(config.stopAttemptFile,String(++calls)+'\\n');if(calls===1)throw Error('simulated_stop_uncertain');return api.stopVerified(...args);};}
+delete config.failFirstStop;const supervisor=api.createSupervisor(config);
 supervisor.start().catch(()=>process.exit(1));
 `);
-  const eventFile = path.join(root, 'events.jsonl'), badFile = path.join(root, 'bad-pid');
-  const config = { dataRoot: path.join(root, 'data'), entryPath: childPath, healthUrl: 'http://127.0.0.1:' + port + '/health', startupGraceMs: 70000, pollMs: 80, restartDelayMs: 80, probeTimeoutMs: 500, stopGraceMs: 5000, ...options };
+  const eventFile = path.join(root, 'events.jsonl'), badFile = path.join(root, 'bad-pid'), stopAttemptFile = path.join(root, 'stop-attempts');
+  const config = { dataRoot: path.join(root, 'data'), entryPath: childPath, healthUrl: 'http://127.0.0.1:' + port + '/health', startupGraceMs: 70000, pollMs: 80, restartDelayMs: 80, probeTimeoutMs: 500, stopGraceMs: 5000, stopAttemptFile, ...options };
   const configPath = path.join(root, 'config.json'); fs.writeFileSync(configPath, JSON.stringify(config));
   const processes = [];
   function launch() {
@@ -52,7 +54,8 @@ supervisor.start().catch(()=>process.exit(1));
     fs.rmSync(root, { recursive: true, force: true });
   });
   const events = () => { try { return fs.readFileSync(eventFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } };
-  return { root, config, badFile, events, launch, childPath: config.entryPath, harness };
+  const stopAttempts = () => { try { return fs.readFileSync(stopAttemptFile, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+  return { root, config, badFile, events, stopAttempts, launch, childPath: config.entryPath, harness };
 }
 
 test('unhealthy child exits before replacement; readiness 503 alone never causes restart', { timeout: 40000 }, async t => {
@@ -64,6 +67,19 @@ test('unhealthy child exits before replacement; readiness 503 alone never causes
   const { requestControl } = require(supervisorPath); await requestControl(f.config.dataRoot, 'stop'); await p.exit;
   assert.throws(() => process.kill(second.pid, 0));
   assert.equal(fs.existsSync(path.join(f.config.dataRoot, 'supervisor.pid.json')), false);
+});
+
+test('an uncertain health-restart stop is retried without exiting or overlapping children', { timeout: 40000 }, async t => {
+  const f = await fixture(t, { failFirstStop: true }); const p = f.launch();
+  const first = await waitFor(() => f.events()[0]); fs.writeFileSync(f.badFile, String(first.pid));
+  await waitFor(() => f.stopAttempts() >= 1);
+  assert.equal(p.child.exitCode, null);
+  const second = await waitFor(() => f.events()[1]).catch(error => { throw Error(error.message + '\n' + p.output() + '\n' + fs.readFileSync(path.join(f.config.dataRoot, 'logs/supervisor.jsonl'), 'utf8')); });
+  assert.ok(f.stopAttempts() >= 2);
+  assert.equal(second.overlap, false);
+  assert.notEqual(second.pid, first.pid);
+  const log = fs.readFileSync(path.join(f.config.dataRoot, 'logs/supervisor.jsonl'), 'utf8');
+  assert.match(log, /"code":"child_stop_uncertain"/);
 });
 
 test('a second supervisor for the same root exits without replacing or stopping the active child', { timeout: 40000 }, async t => {
