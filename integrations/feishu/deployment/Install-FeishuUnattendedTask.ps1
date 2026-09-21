@@ -36,7 +36,7 @@ if ($existing) {
 
 $action = New-ScheduledTaskAction -Execute $shellPath -Argument $arguments -WorkingDirectory $context.IntegrationRoot
 $trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+$settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
 $passwordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Credential.Password)
 try {
     $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPtr)

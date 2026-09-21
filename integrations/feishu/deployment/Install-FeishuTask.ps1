@@ -30,7 +30,7 @@ if ($existing) {
     $matches = $matches -and (Test-CurrentTaskUser $existing.Principal.UserId) -and [int]$existing.Principal.LogonType -eq 3 -and [int]$existing.Principal.RunLevel -eq 0
     $matches = $matches -and $existing.Triggers.Count -eq 1 -and $existing.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger'
     if ($matches) { $matches = $existing.Triggers[0].Enabled -and (Test-CurrentTaskUser $existing.Triggers[0].UserId) }
-    $matches = $matches -and $existing.Settings.Enabled -and $existing.Settings.Hidden -and [int]$existing.Settings.MultipleInstances -eq 2 -and $existing.Settings.ExecutionTimeLimit -eq 'PT0S' -and $existing.Settings.RestartCount -eq 3 -and $existing.Settings.RestartInterval -eq 'PT1M' -and -not $existing.Settings.DisallowStartIfOnBatteries -and -not $existing.Settings.StopIfGoingOnBatteries
+    $matches = $matches -and $existing.Settings.Enabled -and $existing.Settings.Hidden -and [int]$existing.Settings.MultipleInstances -eq 2 -and $existing.Settings.ExecutionTimeLimit -eq 'PT0S' -and $existing.Settings.RestartCount -eq 999 -and $existing.Settings.RestartInterval -eq 'PT1M' -and -not $existing.Settings.DisallowStartIfOnBatteries -and -not $existing.Settings.StopIfGoingOnBatteries
     if (-not $matches) {
         throw 'A different scheduled task already uses this name; it was not changed.'
     }
@@ -40,6 +40,6 @@ if ($existing) {
 $action = New-ScheduledTaskAction -Execute $shellPath -Argument $arguments -WorkingDirectory $context.IntegrationRoot
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $taskUser
 $principal = New-ScheduledTaskPrincipal -UserId $taskUser -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+$settings = New-ScheduledTaskSettingsSet -Hidden -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'OpenBidKit Feishu integration supervisor; starts for this user at logon.' | Out-Null
 Write-Output 'OpenBidKitFeishu registered. Start with Start-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath \.'
