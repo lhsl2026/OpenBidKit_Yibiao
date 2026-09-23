@@ -103,8 +103,9 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
   reportArchive = createReportArchive({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership() });
   writingConfirmationDoc = createWritingConfirmationDoc({ store, config, clock, assertOwnership: () => runner.assertOwnership() });
   selection = selectionFactory({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership(), onReceipt: (receipt, meta) => documentRecovery.queueReceipt(receipt, meta) });
+  const dispatchCardAction = (value, event, route) => (route==='preread'||(!route&&value.agent==='openbidkit-group-file')) ? groupFileSource.select(value,event) : (route==='selection'||(!route&&value.agent==='openbidkit-selection')) ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event));
   const cardSource = cardSourceFactory({ config, workflow, assertOwnership: () => runner.assertOwnership(), clock,
-    onAction: (value, event) => value.agent === 'openbidkit-group-file' ? groupFileSource.select(value,event) : value.agent === 'openbidkit-selection' ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event)) });
+    onAction: dispatchCardAction });
   const makeCodexBridge = codexBridgeFactory ?? (args => require('./codex-bridge.cjs').createCodexBridge({
     ...args, executor: require('./codex-executor.cjs').createCodexExecutor(config.codexBridge)
   }));
@@ -145,7 +146,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     };
     return { ready: missing.length === 0, mode: config.mode, delivery, cardCallback, missing };
   }
-  const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, assertOwnership: assertRuntime });
+  const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, onCardAction: dispatchCardAction, assertOwnership: assertRuntime });
   return { store, workflow, runner, cardSource, selection, documentRecovery, groupFileSource, reportArchive, writingConfirmationDoc, companyEvidence, codexBridge, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');

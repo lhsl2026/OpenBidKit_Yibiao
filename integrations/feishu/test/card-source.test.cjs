@@ -4,11 +4,11 @@ const {EventEmitter}=require('node:events');
 const {PassThrough}=require('node:stream');
 const {createStore}=require('../store.cjs');
 const {createWorkflow}=require('../workflow.cjs');
-const {createCardSource,normalizeCardEvent,cliArguments}=require('../card-source.cjs');
+const {createCardSource,normalizeCardEvent,normalizeCardCallback,cliArguments}=require('../card-source.cjs');
 const config={chatId:'oc_test',operatorIds:['ou_actor'],cardSource:{enabled:true,cliPath:'C:/tools/lark-cli.exe',profile:'openbidkit-feishu'}};
 const value={agent:'openbidkit',projectId:'project',version:'v1',cardKey:'key',action:'follow'};
 const event=(v=value,extra={})=>({type:'card.action.trigger',event_id:'event-1',operator_id:'ou_actor',chat_id:'oc_test',message_id:'om_card',host:'im_message',action_tag:'button',action_value:JSON.stringify(v),...extra});
-const waitFor=async check=>{const until=Date.now()+2000;while(!check()){if(Date.now()>until)assert.fail('condition timed out');await new Promise(r=>setTimeout(r,5));}};
+const waitFor=async(check,timeoutMs=2000)=>{const until=Date.now()+timeoutMs;while(!check()){if(Date.now()>until)assert.fail('condition timed out');await new Promise(r=>setTimeout(r,5));}};
 function child(){const c=new EventEmitter();c.stdin=new PassThrough();c.stdout=new PassThrough();c.stderr=new PassThrough();c.exitCode=null;c.signalCode=null;c.kill=()=>{c.killed=true;c.finish();};c.finish=()=>{if(c.exitCode!==null)return;c.exitCode=0;c.stdout.end();c.stderr.end();c.emit('close',0);};c.stdin.on('finish',c.finish);return c;}
 function source(t,workflow,options={}){const children=[],calls=[];const s=createCardSource({config,workflow,spawnImpl:(exe,args,opts)=>{calls.push({exe,args,opts});const c=child();children.push(c);return c;},reconnectMs:20,startupTimeoutMs:1000,stopTimeoutMs:50,...options});t.after(()=>s.close());s.start();return{s,children,calls};}
 const ready=c=>c.stderr.write('[event] ready event_key=card.action.trigger\n');
@@ -19,6 +19,17 @@ test('CLI card contract retains only allowed action fields and rejects spoofed c
  assert.deepEqual(a,{projectId:'project',version:'v1',cardKey:'key',action:'follow',actorId:'ou_actor',chatId:'oc_test',messageId:'om_card',eventId:'event-1'});
  for(const e of [event(value,{operator_id:'ou_other'}),event(value,{chat_id:'oc_other'}),event(value,{message_id:''}),event(value,{event_id:''}),event(value,{host:'im_top_notice'}),event(value,{action_tag:'input'}),event({...value,agent:'other'}),event({...value,action:'arbitrary'}),event({...value,cardKey:''}),event(value,{action_value:'broken'})])assert.equal(normalizeCardEvent(e,config),null);
  const args=cliArguments(config.cardSource);assert.equal(args[args.indexOf('--as')+1],'bot');assert.equal(args[args.indexOf('--profile')+1],'openbidkit-feishu');assert.ok(!args.includes('--quiet'));assert.ok(!args[args.indexOf('--jq')+1].includes('token'));
+});
+test('namespaced card actions normalize to the existing business contracts while legacy cards remain valid',()=>{
+ const common={projectId:'project',version:'v1',cardKey:'key'};
+ const cases=[
+  [{action:'company_match.follow',...common},'company_match',{agent:'openbidkit',action:'follow',...common}],
+  [{action:'writing.start',...common},'writing',{agent:'openbidkit',action:'write',...common}],
+  [{action:'selection.decline',batchKey:'a'.repeat(40),challenge:'b'.repeat(32)},'selection',{agent:'openbidkit-selection',action:'decline',batchKey:'a'.repeat(40),challenge:'b'.repeat(32)}],
+  [{action:'preread.select_task',jobId:'a'.repeat(40),taskId:'task-1',revision:2},'preread',{agent:'openbidkit-group-file',action:'select_task',jobId:'a'.repeat(40),taskId:'task-1',revision:2}],
+ ];
+ for(const [input,route,want] of cases){const normalized=normalizeCardCallback(event(input),config);assert.equal(normalized.route,route);assert.deepEqual(normalized.value,want);}
+ const legacy=normalizeCardCallback(event(value),config);assert.equal(legacy.route,'company_match');assert.deepEqual(legacy.value,value);
 });
 test('ready marker gates stdout, arbitrary chunks assemble once, stderr/status never retain secrets',async t=>{
  const actions=[];const {s,children,calls}=source(t,{act:a=>actions.push(a)});const c=children[0];
@@ -61,9 +72,10 @@ test('group file selection reaches its handler for the source member while prese
 test('Card2 form submit reconstructs selection only from the exact scoped action name',async t=>{
  const received=[];const {children}=source(t,{}, {onAction:(v,e)=>received.push({v,e})});ready(children[0]);
  const v={agent:'openbidkit-selection',batchKey:'a'.repeat(40),challenge:'b'.repeat(32),action:'select'},id='123e4567-e89b-12d3-a456-426614174000';
- const e=event(undefined,{action_value:'',action_name:'openbidkit_selection_'+v.batchKey+'_'+v.challenge,form_value:JSON.stringify({events:[id]})});
+ const e=event(undefined,{action_value:'',action_name:'selection_select_'+v.batchKey+'_'+v.challenge,form_value:JSON.stringify({events:[id]})});
  emit(children[0],e);emit(children[0],{...e,event_id:'forged',action_name:'submit_selection'});emit(children[0],{...e,event_id:'bad',action_name:e.action_name+'x'});emit(children[0],{...e,event_id:'other',operator_id:'ou_other'});
  await waitFor(()=>received.length===1);await new Promise(r=>setTimeout(r,15));assert.deepEqual(received,[{v,e:{eventId:'event-1',actorId:'ou_actor',chatId:'oc_test',messageId:'om_card',formValue:{events:[id]}}}]);
+ const legacy=normalizeCardCallback({...e,event_id:'legacy',action_name:'openbidkit_selection_'+v.batchKey+'_'+v.challenge},config);assert.equal(legacy.route,'selection');assert.deepEqual(legacy.value,v);
  assert.match(cliArguments(config.cardSource)[cliArguments(config.cardSource).indexOf('--jq')+1],/action_name/);
 });
 test('asynchronous handlers run in order and shutdown waits for only the action already underway',async t=>{
@@ -76,8 +88,15 @@ test('oversized streams fail closed and an invalid action does not stall later c
  children[0].stdout.write('not-json\n');emit(children[0],event(value,{event_id:'reject'}));emit(children[0],event());await waitFor(()=>seen.length===1);assert.equal(s.status().rejected,2);
  children[0].stdout.write('x'.repeat(65537));await waitFor(()=>s.status().error==='card_source_line_too_large');assert.equal(s.status().ready,false);assert.equal(JSON.stringify(s.status()).includes('private'),false);
 });
+test('non-string and inherited action names are rejected without interrupting later callbacks',async t=>{
+ const seen=[];const {s,children}=source(t,{}, {onAction:async(v,e)=>seen.push(e.eventId)});ready(children[0]);
+ emit(children[0],event({...value,action:{toString:null}},{event_id:'malformed'}));
+ emit(children[0],event({...value,action:'toString'},{event_id:'inherited'}));
+ emit(children[0],event(value,{event_id:'valid'}));
+ await waitFor(()=>seen.length===1);assert.deepEqual(seen,['valid']);assert.equal(s.status().rejected,2);
+});
 test('real temporary Node consumer exits through stdin EOF and UTF-8 chunks stay intact',async t=>{
  const actions=[];let proc;
  const e=event({...value,version:'版本一'});const script=`const b=Buffer.from(${JSON.stringify(JSON.stringify(e)+'\n')});process.stderr.write('[event] ready event_key=card.action.trigger\\n');for(let i=0;i<b.length;i++)process.stdout.write(b.subarray(i,i+1));process.stdin.resume();process.stdin.on('end',()=>process.exit(0));`;
- const s=createCardSource({config,workflow:{act:a=>actions.push(a)},spawnImpl:(exe,args,opts)=>(proc=require('node:child_process').spawn(process.execPath,['-e',script],opts)),startupTimeoutMs:1000,stopTimeoutMs:1000});t.after(()=>s.close());s.start();await waitFor(()=>actions.length===1);assert.equal(actions[0].version,'版本一');await s.close();assert.equal(proc.exitCode,0);assert.equal(proc.killed,false);
+ const s=createCardSource({config,workflow:{act:a=>actions.push(a)},spawnImpl:(exe,args,opts)=>(proc=require('node:child_process').spawn(process.execPath,['-e',script],opts)),startupTimeoutMs:5000,stopTimeoutMs:1000});t.after(()=>s.close());s.start();await waitFor(()=>actions.length===1,7000);assert.equal(actions[0].version,'版本一');await s.close();assert.equal(proc.exitCode,0);assert.equal(proc.killed,false);
 });

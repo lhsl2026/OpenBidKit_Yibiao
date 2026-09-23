@@ -1,6 +1,7 @@
 const http=require('node:http');
 const fs=require('node:fs');const path=require('node:path');
 const {createHash,createDecipheriv,timingSafeEqual}=require('node:crypto');
+const {normalizeCardCallback,toWorkflowAction}=require('./card-source.cjs');
 const equal=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 function openCallback(raw,headers,{verificationToken,encryptKey}){
   let body=JSON.parse(raw.toString('utf8'));
@@ -29,7 +30,7 @@ async function readBody(req,limit=1024*1024){
   for await(const part of req){size+=part.length;if(size>limit){const e=Error('body_too_large');e.status=413;throw e;}parts.push(part);}
   return Buffer.concat(parts);
 }
-function createHttpServer({config,workflow,store,readiness,radar,assertOwnership=()=>{}}){
+function createHttpServer({config,workflow,store,readiness,radar,onCardAction,assertOwnership=()=>{}}){
   return http.createServer(async(req,res)=>{
     const send=(status,data)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(data));};
     try{
@@ -42,9 +43,11 @@ function createHttpServer({config,workflow,store,readiness,radar,assertOwnership
         const body=openCallback(await readBody(req),req.headers,config);
         if(body.type==='url_verification')return send(200,{challenge:body.challenge});
         if(body.header?.event_type!=='card.action.trigger')return send(400,{error:'unsupported_event'});
-        const e=body.event??{},v=e.action?.value??{};
-        if(v.agent!=='openbidkit')return send(400,{error:'unsupported_agent'});
-        workflow.act({projectId:v.projectId,version:v.version,action:v.action,cardKey:v.cardKey,challenge:v.challenge,page:v.page,actorId:e.operator?.open_id,chatId:e.context?.open_chat_id,messageId:e.context?.open_message_id,eventId:body.header.event_id});
+        const e=body.event??{},action=e.action??{},serialize=value=>typeof value==='string'?value:value===undefined?'':JSON.stringify(value);
+        const normalized=normalizeCardCallback({type:'card.action.trigger',event_id:body.header.event_id,operator_id:e.operator?.open_id,chat_id:e.context?.open_chat_id,message_id:e.context?.open_message_id,host:'im_message',action_tag:action.tag??'button',action_name:action.name,action_value:serialize(action.value),form_value:action.form_value===undefined?undefined:serialize(action.form_value)},config);
+        if(!normalized)return send(400,{error:'unsupported_action'});
+        if(onCardAction)await onCardAction(normalized.value,normalized.event,normalized.route);
+        else workflow.act(toWorkflowAction(normalized.value,normalized.event));
         return send(200,{toast:{type:'success',content:'已记录，请稍候查看项目卡片'}});
       }
       if(!config.apiKey||!equal(req.headers.authorization,'Bearer '+config.apiKey))return send(401,{error:'unauthorized'});

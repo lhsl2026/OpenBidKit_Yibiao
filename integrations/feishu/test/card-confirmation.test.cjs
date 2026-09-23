@@ -28,3 +28,13 @@ test('recoverable writing failures show a precise Chinese retry action', () => {
   assert.match(labels({ status: 'failed', result: { code: 'worker_process_failed' } }), /重新尝试生成/);
   assert.doesNotMatch(labels({ status: 'interrupted', result: { code: 'worker_timeout' } }), /修复配置后重试/);
 });
+
+test('new project cards emit only company_match and writing action namespaces', () => {
+  const p = { id: 'p', version: '1', checksum: 'a', humanDecision: 'follow', input: { deadline: '2099-01-01', writingConfirmationUrl: 'https://tenant.feishu.cn/docx/doc123', writingConfirmation: { challenge: 'outline-1' }, handoff: { task: { title: '项目' }, status: 'ready', superseded: false, warnings: [], requirements: [] } }, assessment: { decision: 'follow', items: [], blockers: [], actions: [] } };
+  const values = [];
+  const collect = value => { if (Array.isArray(value)) value.forEach(collect); else if (value && typeof value === 'object') { if (value.type === 'callback' && value.value) values.push(value.value); Object.values(value).forEach(collect); } };
+  collect(buildCard(p, { status: 'waiting_confirmation', confirmationPublished: true, result: { confirmation: { type: 'outline', challenge: 'outline-1' } } }, 0, { now: 1 }));
+  collect(buildCard(p, { status: 'failed', result: { code: 'worker_process_failed' } }, 0, { now: 1 }));
+  assert.deepEqual([...new Set(values.map(value => value.action))].sort(), ['company_match.decline', 'company_match.defer', 'company_match.follow', 'writing.continue', 'writing.retry', 'writing.start']);
+  assert.ok(values.every(value => !('agent' in value)));
+});

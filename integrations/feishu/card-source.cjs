@@ -2,6 +2,7 @@
 const path=require('node:path');
 const {spawn}=require('node:child_process');
 const {StringDecoder}=require('node:string_decoder');
+const {normalizeCardAction}=require('./card-actions.cjs');
 const EVENT='card.action.trigger';
 const READY='[event] ready event_key='+EVENT;
 // Project at the trusted CLI boundary: delayed-update tokens and original card bodies never enter our cache.
@@ -11,18 +12,19 @@ function cliArguments(options){return ['event','consume',EVENT,'--as','bot','--p
 function normalizeCardCallback(e,config){
  if(e?.type!==EVENT||e.host!=='im_message'||e.action_tag!=='button'||e.chat_id!==config.chatId)return null;
  if(!text(e.event_id)||!text(e.message_id)||!/^om_[A-Za-z0-9_-]+$/.test(e.message_id)||!text(e.operator_id)||!text(e.chat_id))return null;
- const formName=typeof e.action_name==='string'?e.action_name.match(/^openbidkit_selection_([a-f0-9]{40})_([a-f0-9]{32})$/):null;
+ const formName=typeof e.action_name==='string'?e.action_name.match(/^(?:selection_select_|openbidkit_selection_)([a-f0-9]{40})_([a-f0-9]{32})$/):null;
  let v;
- if(formName)v={agent:'openbidkit-selection',batchKey:formName[1],challenge:formName[2],action:'select'};
+ if(formName)v={batchKey:formName[1],challenge:formName[2],action:'selection.select'};
  else{if(!text(e.action_value,8192))return null;try{v=JSON.parse(e.action_value);}catch{return null;}}
  const context={eventId:e.event_id,actorId:e.operator_id,chatId:e.chat_id,messageId:e.message_id};
- if(v?.agent==='openbidkit-group-file'){
-  if(v.action!=='select_task'||!/^[a-f0-9]{40}$/.test(v.jobId??'')||!text(v.taskId)||!Number.isInteger(v.revision)||v.revision<1)return null;
-  return {value:{agent:v.agent,action:v.action,jobId:v.jobId,taskId:v.taskId,revision:v.revision},event:context};
+ const descriptor=normalizeCardAction(v);if(!descriptor)return null;
+ if(descriptor.route==='preread'){
+  if(!/^[a-f0-9]{40}$/.test(v.jobId??'')||!text(v.taskId)||!Number.isInteger(v.revision)||v.revision<1)return null;
+  return {route:descriptor.route,value:{agent:descriptor.agent,action:descriptor.action,jobId:v.jobId,taskId:v.taskId,revision:v.revision},event:context};
  }
- if(v?.agent==='openbidkit-selection'){
+ if(descriptor.route==='selection'){
   if(!config.operatorIds?.includes(e.operator_id))return null;
-  if(!/^[a-f0-9]{40}$/.test(v.batchKey??'')||!/^[a-f0-9]{32}$/.test(v.challenge??'')||!['select','decline'].includes(v.action))return null;
+  if(!/^[a-f0-9]{40}$/.test(v.batchKey??'')||!/^[a-f0-9]{32}$/.test(v.challenge??''))return null;
   let form={events:[]};
   if(e.form_value){
    if(!text(e.form_value,16384))return null;
@@ -30,14 +32,14 @@ function normalizeCardCallback(e,config){
    if(!form||Array.isArray(form)||Object.keys(form).some(k=>k!=='events'))return null;
   }
   if(!Array.isArray(form.events)||form.events.length>100||form.events.some(id=>typeof id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))return null;
-  if(v.action==='select'&&!form.events.length)return null;
-  return {value:{agent:v.agent,batchKey:v.batchKey,challenge:v.challenge,action:v.action},event:{...context,formValue:{events:[...new Set(form.events)]}}};
+  if(descriptor.action==='select'&&!form.events.length)return null;
+  return {route:descriptor.route,value:{agent:descriptor.agent,batchKey:v.batchKey,challenge:v.challenge,action:descriptor.action},event:{...context,formValue:{events:[...new Set(form.events)]}}};
  }
- if(v?.agent!=='openbidkit'||!config.operatorIds?.includes(e.operator_id)||!text(v.projectId)||!text(v.version)||!text(v.cardKey)||!['follow','defer','decline','write','continue','retry','page'].includes(v.action))return null;
- if(v.action==='continue'&&!text(v.challenge))return null;
- if(v.action==='page'&&(!Number.isInteger(v.page)||v.page<0))return null;
- return {value:{agent:v.agent,projectId:v.projectId,version:v.version,cardKey:v.cardKey,action:v.action,
-  ...(v.action==='continue'?{challenge:v.challenge}:{}),...(v.action==='page'?{page:v.page}:{})},event:context};
+ if(!['company_match','writing','workflow'].includes(descriptor.route)||!config.operatorIds?.includes(e.operator_id)||!text(v.projectId)||!text(v.version)||!text(v.cardKey))return null;
+ if(descriptor.action==='continue'&&!text(v.challenge))return null;
+ if(descriptor.action==='page'&&(!Number.isInteger(v.page)||v.page<0))return null;
+ return {route:descriptor.route,value:{agent:descriptor.agent,projectId:v.projectId,version:v.version,cardKey:v.cardKey,action:descriptor.action,
+  ...(descriptor.action==='continue'?{challenge:v.challenge}:{}),...(descriptor.action==='page'?{page:v.page}:{})},event:context};
 }
 function toWorkflowAction(v,e){
  // Preserve the existing HTTP adapter's field order because workflow action hashes are order-sensitive.
@@ -83,9 +85,9 @@ function createCardSource({config,workflow,onAction,assertOwnership=()=>{},spawn
    if(draining)return;draining=true;
    drainTask=(async()=>{
     while(queue.length&&!closed&&!lost){
-     if(!own()){stop();break;}const {value,event}=queue.shift();
+     if(!own()){stop();break;}const {value,event,route}=queue.shift();
      // Keep original event IDs across reconnect. Workflow/selection handlers own durable business deduplication.
-     try{await dispatch(value,event);state.accepted++;state.lastEventAt=clock();}catch{state.rejected++;}
+     try{await dispatch(value,event,route);state.accepted++;state.lastEventAt=clock();}catch{state.rejected++;}
     }
     state.rejected+=queue.length;queue.length=0;draining=false;
    })();

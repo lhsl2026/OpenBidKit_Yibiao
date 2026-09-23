@@ -5,12 +5,14 @@ const label={follow:'建议跟进',review:'暂缓，待核实',reject:'不建议
 const human={follow:'已确认跟进',defer:'暂缓',decline:'不投'};
 const {buildDecisionBrief}=require('./decision-brief.cjs');
 const {canGenerateDraft}=require('./writing-policy.cjs');
+const {cardAction}=require('./card-actions.cjs');
 const writingPortalBehavior=bidType=>({type:'open_url',default_url:'https://yibiao.pro',pc_url:`yibiao://new-bid${bidType?`?type=${bidType}`:''}`});
 const writingPortalButton=()=>({tag:'button',type:'default',text:{tag:'plain_text',content:'生成其他标书'},behaviors:[writingPortalBehavior()]});
 function baseCard(title,template,elements){return{schema:'2.0',config:{update_multi:true,width_mode:'default',enable_forward:false},header:{title:{tag:'plain_text',content:title.slice(0,120)},template},body:{direction:'vertical',vertical_spacing:'12px',padding:'12px',elements}};}
 function buildCard(p,writing,page=0,options={}){
   const h=p.input.handoff,a=p.assessment,decision=a.decision;const cardKey=require('./store.cjs').key(p.input,p.assessment);
-  const button=(action,text,type='default',disabled=false,width)=>({tag:'button',type,text:{tag:'plain_text',content:text},disabled,...(width?{width}:{}),behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action}}]});
+  const actionNames={follow:'company_match.follow',defer:'company_match.defer',decline:'company_match.decline',write:'writing.start',continue:'writing.continue',retry:'writing.retry'};
+  const button=(action,text,type='default',disabled=false,width)=>({tag:'button',type,text:{tag:'plain_text',content:text},disabled,...(width?{width}:{}),behaviors:[{type:'callback',value:cardAction(actionNames[action],{projectId:p.id,version:p.version,cardKey})}]});
   const brief=buildDecisionBrief(p,options);
   const links=[];for(const [name,url] of [['预读报告',p.input.reportUrl],['招标原文件',p.input.sourceUrl]]){try{const u=new URL(url);if(u.protocol==='https:'&&!u.username&&!u.password)links.push({tag:'button',text:{tag:'plain_text',content:name},behaviors:[{type:'open_url',default_url:u.href}]});}catch{}}
   const writingText=writing?`\n编写进度：${escapeText(({queued:'排队中',running:'处理中',not_ready:'配置未就绪',waiting_confirmation:'等待确认',completed:'初稿已生成',failed:'失败，待处理',interrupted:'上次运行中断，请核对后重试',cancelled:'已取消'})[writing.status]??writing.status)}`:'';
@@ -19,7 +21,7 @@ function buildCard(p,writing,page=0,options={}){
     const titles={outline_selection:'请确认采用建议的章节范围',outline:'请确认目录后生成正文',global_facts:'请核对事实清单；缺失信息将保留待补占位，不代表已核实',source_file:'缺少完整招标原文件，请由接入管理员补充',content_decision:'部分正文小节未完成，请查看清单后重试'};
     writingElements.push(md(`**${titles[c.type]??'需要人工确认'}**\n完整清单请查看飞书确认文档。`));
     if(c.challenge&&p.input.writingConfirmation?.challenge===c.challenge){try{const u=new URL(p.input.writingConfirmationUrl);if(u.protocol==='https:'&&!u.username&&!u.password)writingElements.push({tag:'button',type:'default',text:{tag:'plain_text',content:'查看确认文档'},behaviors:[{type:'open_url',default_url:u.href}]});}catch{}}
-    if(c.challenge&&['outline_selection','outline','global_facts','content_decision'].includes(c.type))writingElements.push({tag:'button',type:'primary_filled',disabled:!writing.confirmationPublished,text:{tag:'plain_text',content:c.type==='global_facts'?'保留待补项，继续生成':c.type==='content_decision'?'重试失败小节':'确认以上内容并继续'},behaviors:[{type:'callback',value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey,action:'continue',challenge:c.challenge}}]});
+    if(c.challenge&&['outline_selection','outline','global_facts','content_decision'].includes(c.type))writingElements.push({tag:'button',type:'primary_filled',disabled:!writing.confirmationPublished,text:{tag:'plain_text',content:c.type==='global_facts'?'保留待补项，继续生成':c.type==='content_decision'?'重试失败小节':'确认以上内容并继续'},behaviors:[{type:'callback',value:cardAction('writing.continue',{projectId:p.id,version:p.version,cardKey,challenge:c.challenge})}]});
   }
   if(['failed','not_ready','interrupted'].includes(writing?.status)){
     const code=writing?.result?.code;

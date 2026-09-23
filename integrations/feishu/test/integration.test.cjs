@@ -13,7 +13,7 @@ test('HTTP radar → preread → one Feishu card → confirmed draft file, with 
   else if(req.url==='/api/preread/tasks/t/handoff')data=handoff;
   else if(req.url==='/open-apis/auth/v3/tenant_access_token/internal')data={code:0,tenant_access_token:'fake-token',expire:7200};
   else if(req.url==='/open-apis/im/v1/files')data={code:0,data:{file_key:'fake-file'}};
-  else if(req.method==='POST'&&req.url.startsWith('/open-apis/im/v1/messages')){const body=JSON.parse(raw);body.msg_type==='interactive'?cards++:files++;data={code:0,data:{message_id:body.msg_type==='interactive'?'card-id':'file-id'}};}
+  else if(req.method==='POST'&&req.url.startsWith('/open-apis/im/v1/messages')){const body=JSON.parse(raw);body.msg_type==='interactive'?cards++:files++;data={code:0,data:{message_id:body.msg_type==='interactive'?'om_card':'om_file'}};}
   else data={code:0,data:{}};
   res.setHeader('content-type','application/json');res.end(JSON.stringify(data));
  });const fakeUrl=await listen(fake);t.after(()=>fake.close());
@@ -30,7 +30,7 @@ test('HTTP radar → preread → one Feishu card → confirmed draft file, with 
  const event={eventType:'im.message.receive_v1',eventId:'event',messageId:'notice',chatId:'radar',senderId:'bot',messageType:'text',content:'{"text":"synthetic"}'};
  for(let n=0;n<2;n++)assert.equal((await fetch(url+'/radar',{method:'POST',headers:{authorization:'Bearer '+config.apiKey},body:JSON.stringify(event)})).status,202);
  await runner.tick();assert.equal(radars,1);assert.equal(cards,1);const p=store.listProjects()[0];assert.equal(p.assessment.decision,'follow');
- async function callback(action,id){const raw=JSON.stringify({header:{token:config.verificationToken,event_type:'card.action.trigger',event_id:id},event:{operator:{open_id:'actor'},context:{open_chat_id:'test-chat',open_message_id:'card-id'},action:{value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey:store.key(p.input,p.assessment),action}}}});const ts=String(Math.floor(Date.now()/1000));return fetch(url+'/lark/events',{method:'POST',headers:{'x-lark-request-timestamp':ts,'x-lark-request-nonce':'n','x-lark-signature':createHash('sha256').update(ts+'n'+config.encryptKey+raw).digest('hex')},body:raw});}
+ async function callback(action,id){const raw=JSON.stringify({header:{token:config.verificationToken,event_type:'card.action.trigger',event_id:id},event:{operator:{open_id:'actor'},context:{open_chat_id:'test-chat',open_message_id:'om_card'},action:{value:{agent:'openbidkit',projectId:p.id,version:p.version,cardKey:store.key(p.input,p.assessment),action}}}});const ts=String(Math.floor(Date.now()/1000));return fetch(url+'/lark/events',{method:'POST',headers:{'x-lark-request-timestamp':ts,'x-lark-request-nonce':'n','x-lark-signature':createHash('sha256').update(ts+'n'+config.encryptKey+raw).digest('hex')},body:raw});}
  assert.equal((await callback('follow','follow-event')).status,200);assert.equal((await callback('write','write-event')).status,200);await runner.tick();await runner.tick();assert.equal(files,1);assert.equal(cards,1);
  assert.ok(auth.some(([u,a])=>u.includes('handoff')&&a==='Bearer handoff-key'));assert.ok(auth.some(([u,a])=>u.includes('lark-message')&&a==='Bearer relay-key'));
  await new Promise(r=>server.close(r));store.close();store=createStore(path.join(dir,'state.db'));assert.equal(store.getProject(p.id).humanDecision,'follow');assert.equal(store.listWriting()[0].status,'completed');assert.equal(store.listFiles(clock()).length,0);
