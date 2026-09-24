@@ -83,25 +83,38 @@ test('waiting-task matching prefers an exact card reply and never guesses among 
  const unique={taskId:'t2',manualActionId:'a2',title:'钟山区人民医院采购项目',statusCardMessageId:null};
  assert.deepEqual(matchWaitingTask({job:{replyTo:null,fileName:'钟山区人民医院采购项目招标文件.pdf'},candidates:[unique]}),{status:'unique',candidate:unique,mode:'title'});
  assert.equal(matchWaitingTask({job:{replyTo:null,fileName:'A项目二标段招标文件.pdf'},candidates:[{taskId:'t1',title:'A项目二标段'},{taskId:'t2',title:'A项目二标段补充'}]}).status,'ambiguous');
+ assert.deepEqual(matchWaitingTask({job:{replyTo:null,fileName:'招标文件正文.pdf'},candidates:[unique]}),{status:'none'});
  assert.deepEqual(matchWaitingTask({job:{replyTo:null,fileName:'完全不同项目.pdf'},candidates:[unique]}),{status:'none'});
 });
 
-function stateSetup(t,{candidates=[],response,uploadError=false,attachError=false}={}){
- const store=createStore(':memory:');t.after(()=>store.close());let now=1000;const calls={download:0,upload:0,sign:0,submit:0,attach:0};let submitted;
+function stateSetup(t,{candidates=[],response,uploadError=false,attachError=false,reconciliationResponse={status:'missing'}}={}){
+ const store=createStore(':memory:');t.after(()=>store.close());let now=1000;const calls={download:0,upload:0,sign:0,submit:0,attach:0,reconcile:0};let submitted;
  const config={...sourceConfig,groupFileSource:{...sourceConfig.groupFileSource,root:'C:/group-files',appId:'app_17agc8m97f2',cliPath:process.execPath}};
- const source=createGroupFileSource({store,config,clock:()=>now,downloader:{download:async()=>{calls.download++;return {sha256:'b'.repeat(64),size:20,extension:'.pdf',sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf'};}},storage:{upload:async()=>{calls.upload++;if(uploadError)throw Error('unknown');return {remotePath:'/group/file.pdf'};},sign:async()=>{calls.sign++;return {url:'https://files.example/group.pdf?private=1'};}},preread:{receiveGroupFile:async body=>{calls.submit++;submitted=body;return response??{status:'processed',results:[{status:'triggered',taskId:'new-task'}]};},attachManualDocument:async(taskId,body)=>{calls.attach++;submitted={taskId,body};if(attachError)throw Error('unknown');return {acquisition:{status:'acquired',documentId:'doc',documentVersion:1}};}},waitingCandidates:()=>candidates});
- const job=store.receiveGroupFile({...input,id:'new-job',messageId:'new-message',fileName:'钟山区人民医院采购项目招标文件.pdf'},now);return {store,source,job,calls,submitted:()=>submitted,advance:()=>{now+=1000;}};
+ const source=createGroupFileSource({store,config,clock:()=>now,downloader:{download:async()=>{calls.download++;return {sha256:'b'.repeat(64),size:20,extension:'.pdf',sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf'};}},storage:{upload:async()=>{calls.upload++;if(uploadError)throw Error('unknown');return {remotePath:'/group/file.pdf'};},sign:async()=>{calls.sign++;return {url:'https://files.example/group.pdf?private=1'};}},preread:{receiveGroupFile:async body=>{calls.submit++;submitted=body;return response??{status:'processed',results:[{status:'triggered',taskId:'new-task'}]};},attachManualDocument:async(taskId,body)=>{calls.attach++;submitted={taskId,body};if(attachError)throw Error('unknown');return {acquisition:{status:'acquired',documentId:'doc',documentVersion:1}};},reconcileManualDocument:async(taskId,sha256)=>{calls.reconcile++;return {...reconciliationResponse,taskId,sha256};}},waitingCandidates:()=>candidates});
+ const job=store.receiveGroupFile({...input,id:'new-job',messageId:'new-message',fileName:'钟山区人民医院采购项目招标文件.pdf'},now);return {store,source,job,calls,submitted:()=>submitted,advance:(milliseconds=1000)=>{now+=milliseconds;}};
 }
 
 test('a new file uploads once and submits one stable group-file event before watching',async t=>{
  const {store,source,calls,submitted,advance}=stateSetup(t);await source.tick();advance();await source.tick();advance();await source.tick();advance();await source.tick();
- assert.deepEqual(calls,{download:1,upload:1,sign:1,submit:1,attach:0});const job=store.getGroupFileJob('new-job');assert.equal(job.stage,'watching');assert.equal(job.taskId,'new-task');assert.equal(submitted().eventId,'openbidkit-group-file-new-job');assert.equal(submitted().candidate.fileName,'钟山区人民医院采购项目招标文件.pdf');assert.equal(store.getWatch('new-task').payload.sourceGroupFileId,'new-job');
+ assert.deepEqual(calls,{download:1,upload:1,sign:1,submit:1,attach:0,reconcile:0});const job=store.getGroupFileJob('new-job');assert.equal(job.stage,'watching');assert.equal(job.taskId,'new-task');assert.equal(submitted().eventId,'openbidkit-group-file-new-job');assert.equal(submitted().candidate.fileName,'钟山区人民医院采购项目招标文件.pdf');assert.equal(submitted().candidate.sha256,'b'.repeat(64));assert.deepEqual(store.getWatch('new-task').payload,{companyId:'隆创信息有限公司',sourceInboxId:'group-file:new-job',sourceGroupFileId:'new-job',sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf',sourceChecksum:'b'.repeat(64)});
 });
 
 test('a uniquely matched waiting task attaches instead of creating another preread task',async t=>{
  const candidate={taskId:'waiting-task',manualActionId:'manual-action',title:'钟山区人民医院采购项目',statusCardMessageId:null};const {store,source,calls,submitted,advance}=stateSetup(t,{candidates:[candidate]});
  await source.tick();advance();await source.tick();advance();await source.tick();advance();await source.tick();
  assert.equal(calls.submit,0);assert.equal(calls.attach,1);assert.equal(submitted().taskId,'waiting-task');assert.equal(submitted().body.manualActionId,'manual-action');assert.equal(submitted().body.candidate.officialCategory,'tender_document');assert.equal(store.getGroupFileJob('new-job').stage,'watching');
+ assert.deepEqual(store.getWatch('waiting-task').payload,{companyId:'隆创信息有限公司',sourceGroupFileId:'new-job',sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf',sourceChecksum:'b'.repeat(64)});
+});
+
+test('an uncertain manual attachment reconciles by task and sha without repeating the post',async t=>{
+ const candidate={taskId:'waiting-task',manualActionId:'manual-action',title:'钟山区人民医院采购项目',statusCardMessageId:null};
+ const {store,source,calls,advance}=stateSetup(t,{candidates:[candidate],attachError:true,reconciliationResponse:{status:'attached',documentId:'doc-2',documentVersion:2,parseStatus:'parsing'}});
+ await source.tick();advance();await source.tick();advance();await source.tick();advance();await source.tick();
+ assert.equal(store.getGroupFileJob('new-job').stage,'reconciling');
+ advance(60000);await source.tick();
+ assert.equal(store.getGroupFileJob('new-job').stage,'watching');
+ assert.equal(calls.attach,1);assert.equal(calls.reconcile,1);assert.equal(calls.submit,0);
+ assert.deepEqual(store.getWatch('waiting-task').payload,{companyId:'隆创信息有限公司',sourceGroupFileId:'new-job',sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf',sourceChecksum:'b'.repeat(64)});
 });
 
 test('ambiguous matches wait for selection before upload and interrupted remote writes fail closed',async t=>{
@@ -111,12 +124,36 @@ test('ambiguous matches wait for selection before upload and interrupted remote 
 
 test('a repeated file reuses the canonical completed task without upload or model submission',async t=>{
  const {store,source,calls}=stateSetup(t);store.receiveGroupFile({...input,id:'canonical',messageId:'canonical-message'},1);store.updateGroupFileJob('canonical','discovered',{stage:'downloaded',sha256:'b'.repeat(64),sourcePath:'C:/group-files/canonical.pdf',fileSize:20,taskId:'canonical-task'},2);store.updateGroupFileJob('canonical','downloaded',{stage:'completed'},3);
- await source.tick();const repeated=store.getGroupFileJob('new-job');assert.equal(repeated.stage,'completed');assert.equal(repeated.canonicalJobId,'canonical');assert.equal(repeated.taskId,'canonical-task');assert.deepEqual(calls,{download:1,upload:0,sign:0,submit:0,attach:0});
+ await source.tick();const repeated=store.getGroupFileJob('new-job');assert.equal(repeated.stage,'completed');assert.equal(repeated.canonicalJobId,'canonical');assert.equal(repeated.taskId,'canonical-task');assert.deepEqual(calls,{download:1,upload:0,sign:0,submit:0,attach:0,reconcile:0});
+});
+
+test('a completed group file schedules one visible card rebind when the existing project card predates the file',async t=>{
+ const {store,source}=stateSetup(t);const fileTime=Number(input.createTime);
+ store.saveProject({id:'existing-project',taskId:'existing-task',companyId:'隆创信息有限公司',version:'1',checksum:'b'.repeat(64),generatedAt:'2026-09-21T03:30:00Z',input:{handoff:{task:{title:'既有项目'},requirements:[]}},assessment:{decision:'review'},messageId:'om_old_card',created:fileTime+1000,revision:1});
+ const project=store.getProject('existing-project'),stream=store.messageStream(project,'chat');store.attemptStream(stream.id,fileTime-1);
+ store.updateGroupFileJob('new-job','discovered',{stage:'watching',taskId:'existing-task',sha256:'b'.repeat(64),sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf'},1001);
+ await source.tick();
+ assert.equal(store.getGroupFileJob('new-job').stage,'completed');
+ const rebind=store.getPendingCardRebind('existing-project','chat');
+ assert.equal(rebind.source_job_id,'new-job');assert.equal(rebind.old_message_id,'om_old_card');
+ await source.tick();
+ assert.equal(store.db.prepare('SELECT COUNT(*) count FROM card_rebindings').get().count,1);
+});
+
+test('a completed group file does not rebind a project card created for the same or a later intake',async t=>{
+ const {store,source}=stateSetup(t);const fileTime=Number(input.createTime);
+ store.saveProject({id:'current-project',taskId:'current-task',companyId:'隆创信息有限公司',version:'1',checksum:'b'.repeat(64),generatedAt:'2026-09-21T03:30:00Z',input:{handoff:{task:{title:'当前项目'},requirements:[]}},assessment:{decision:'review'},messageId:'om_current_card',created:fileTime-1000,revision:1});
+ const project=store.getProject('current-project'),stream=store.messageStream(project,'chat');store.attemptStream(stream.id,fileTime);
+ store.updateGroupFileJob('new-job','discovered',{stage:'watching',taskId:'current-task',sha256:'b'.repeat(64),sourcePath:'C:/group-files/objects/'+('b'.repeat(64))+'.pdf'},1001);
+ await source.tick();
+ assert.equal(store.getGroupFileJob('new-job').stage,'completed');
+ assert.equal(store.getPendingCardRebind('current-project','chat'),null);
+ assert.equal(store.db.prepare('SELECT COUNT(*) count FROM card_rebindings').get().count,0);
 });
 
 test('status cards use fixed safe copy and ambiguous matches expose bounded callbacks',()=>{
  const received=buildGroupFileStatusCard({id:'a'.repeat(40),fileName:'<at id=all>项目.pdf</at>',stage:'discovered',statusRevision:1,errorCode:null,candidates:null});const receivedText=JSON.stringify(received);assert.equal(received.schema,'2.0');assert.match(receivedText,/已收到招标文件，正在下载并校验/);assert.doesNotMatch(receivedText,/<at/);
- const waiting=buildGroupFileStatusCard({id:'a'.repeat(40),fileName:'项目.pdf',stage:'waiting_selection',statusRevision:2,errorCode:'group_file_selection_required',candidates:[{taskId:'task-1',title:'项目一',manualActionId:'action-1'},{taskId:'task-2',title:'项目二',manualActionId:'action-2'}]});const callbacks=waiting.body.elements.filter(element=>element.tag==='button').map(element=>element.behaviors[0].value);assert.equal(callbacks.length,2);assert.deepEqual(callbacks[0],{agent:'openbidkit-group-file',action:'select_task',jobId:'a'.repeat(40),taskId:'task-1',revision:2});
+ const waiting=buildGroupFileStatusCard({id:'a'.repeat(40),fileName:'项目.pdf',stage:'waiting_selection',statusRevision:2,errorCode:'group_file_selection_required',candidates:[{taskId:'task-1',title:'项目一',manualActionId:'action-1'},{taskId:'task-2',title:'项目二',manualActionId:'action-2'}]});const callbacks=waiting.body.elements.filter(element=>element.tag==='button').map(element=>element.behaviors[0].value);assert.equal(callbacks.length,2);assert.deepEqual(callbacks[0],{action:'preread.select_task',jobId:'a'.repeat(40),taskId:'task-1',revision:2});
  const failed=JSON.stringify(buildGroupFileStatusCard({id:'a'.repeat(40),fileName:'项目.pdf',stage:'failed',statusRevision:3,errorCode:'group_file_too_large'}));assert.match(failed,/文件超过 30 MiB/);for(const secret of ['C:\\','file_key','https://signed','a'.repeat(64)])assert.equal(failed.includes(secret),false);
 });
 

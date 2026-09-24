@@ -23,6 +23,7 @@ test('pure text outline has durable root selection, expands only selected scope 
   assert.equal(after.outlineData.outline[0].children[0].content_mode, 'ai-generate');
   assert.equal(after.outlineWordControlSnapshot.sectionWords, 200);
   assert.ok(f.calls.every(x => x.response_format.type === 'json_object' && !x.tools));
+  assert.ok(f.calls.every(x => x.timeout_ms === 600000));
 });
 test('invalid root scope or tool-dependent output is rejected without replacing the selected directory', async () => {
   const f = fixture([{ outline: [{ title: '技术方案', description: '方案' }] }, { outline: [{ id: '1', title: '伪造新范围', children: [{ title: 'x' }] }] }]);
@@ -35,6 +36,17 @@ test('invalid root scope or tool-dependent output is rejected without replacing 
 test('existing pure text V1 fact runner persists candidate facts with placeholder mode', async () => {
   const f = fixture([]); await f.adapter.generateFacts();
   assert.equal(f.state().globalFactsTask.status, 'success'); assert.match(f.state().globalFacts[0].content, /待填写/);
+});
+test('global fact bridge timeouts remain distinguishable from generic generation failures', async () => {
+  let state = { workflowKind: 'technical-plan', projectOverview: '合成验收项目', techRequirements: '', globalFactsMode: 'placeholder', outlineData: { outline: [{ id: '1', title: '实施方案', content_mode: 'ai-generate' }] } };
+  const workspaceStore = { loadTechnicalPlan: () => structuredClone(state), readTenderMarkdown: () => '# 招标文件', updateTechnicalPlan: partial => { state = { ...state, ...partial }; return state; } };
+  const adapter = createCodexWritingAdapter({
+    aiService: {}, workspaceStore, knowledgeBaseService: {},
+    runGlobalFactsTask: async () => { throw Object.assign(new Error('execution_timeout'), { code: 'execution_timeout' }); },
+  });
+  await assert.rejects(adapter.generateFacts(), error => error.code === 'codex_fact_generation_timeout');
+  assert.equal(state.globalFactsTask.status, 'error');
+  assert.equal(state.globalFactsTask.error, 'codex_fact_generation_timeout');
 });
 test('Codex Agent facade cannot start tools even from a bound task context; content options cannot enable Agent features', async () => {
   const agent = createTextOnlyAgentService();

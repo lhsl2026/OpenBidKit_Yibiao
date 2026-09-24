@@ -34,7 +34,7 @@ function BusinessBidPage() {
   };
 
   useEffect(() => {
-    if (!bridge) { setLoadError('商务标桌面服务未就绪，请在易标桌面客户端打开。'); return; }
+    if (!bridge) { setLoadError('商务标桌面服务未就绪，请在联智标桌面客户端打开。'); return; }
     let mounted = true;
     let unsubscribe = () => {};
     const load = async () => {

@@ -105,7 +105,7 @@ async function main() {
   const payload = {
     projectName: packageJson.name || 'yibiao-client',
     appId: packageJson.build?.appId || 'com.yibiao.openbidkit',
-    productName: packageJson.build?.productName || '易标投标工具箱',
+    productName: packageJson.build?.productName || '联智标',
     buildId: getBuildId(),
     gitCommitSha: getGitCommitSha(),
     builtAt: String(process.env.YIBIAO_BUILT_AT || '').trim() || new Date().toISOString(),

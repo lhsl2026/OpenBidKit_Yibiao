@@ -1,20 +1,26 @@
 const { randomUUID } = require('node:crypto');
+const path = require('node:path');
 const { key } = require('./store.cjs');
-const { deliverGroupFileStatus, deliverOutbox } = require('./lark.cjs');
+const { deliverGroupFileStatus, deliverOutbox, reconcilePrereadDeliveries } = require('./lark.cjs');
 const { buildSummary } = require('./card.cjs');
 const { enqueueArtifacts, deliverFiles } = require('./files.cjs');
 const { recordReceipt, inspectReceipt, isSourceInboxActive } = require('./receipt.cjs');
 const { normalizeRadarContent } = require('./preread.cjs');
 const { canGenerateDraft } = require('./writing-policy.cjs');
-const { recoverWritingSource } = require('./source-recovery.cjs');
+const { recoverWritingSource, stageVerifiedWritingSource } = require('./source-recovery.cjs');
 
-function createRunner({ store, config, workflow, preread, lark, write, recoverSource, onReceipt, onSourceEdited, onTick, groupFileSource, clock = Date.now }) {
+function createRunner({ store, config, workflow, preread, lark, write, recoverSource, stageSource, onReceipt, onSourceEdited, onTick, groupFileSource, clock = Date.now }) {
   const owner = randomUUID(), controller = new AbortController();
   let running = false, writingLane = null, acquired = false, lost = false, closing = false, renewal;
   const radarSource = require('./radar-source.cjs').createRadarSource({store,config,receive:receiveRadar,clock,assertOwnership,signal:controller.signal});
   const revalidate = id => workflow.revalidate ? workflow.revalidate(id) : store.getProject(id);
   const watchActive=w=>{const current=store.getWatch(w.task_id);return !!current&&JSON.stringify(current.payload)===JSON.stringify(w.payload)&&(!w.payload.sourceInboxId||isSourceInboxActive(store,w.payload.sourceInboxId));};
   const sourceRecovery=recoverSource??(preread&&config.writingRoot?({project})=>recoverWritingSource({project,root:config.writingRoot,client:preread}):null);
+  const sourceStaging=stageSource??(config.writingRoot?input=>stageVerifiedWritingSource({
+    ...input,
+    root:config.writingRoot,
+    allowedRoots:[config.groupFileSource?.root?path.join(config.groupFileSource.root,'objects'):null,config.documentRecovery?.root].filter(Boolean),
+  }):null);
 
   function loseOwnership() {
     lost = true; clearInterval(renewal); controller.abort(new Error('runner_lease_lost'));
@@ -89,13 +95,25 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
     }
   }
   async function recoverWritingSources(){
-    if(!sourceRecovery)return;
-    for(const candidate of store.listWriting().filter(job=>!job.payload?.sourcePath&&(job.status==='queued'||(job.status==='waiting_confirmation'&&job.result?.code==='source_required')))){
+    if(!sourceRecovery&&!sourceStaging)return;
+    for(const candidate of store.listWriting().filter(job=>job.status==='queued'||(job.status==='waiting_confirmation'&&job.result?.code==='source_required'))){
       assertOwnership();let project=revalidate(candidate.project_id);if(!canWrite(project,clock()))continue;
+      const expected=String(project?.checksum??'').replace(/^sha256:/i,'').toLowerCase();
+      if(candidate.payload?.sourcePath){
+        if(!sourceStaging)continue;
+        let source;try{source=await sourceStaging({project,job:candidate,sourcePath:candidate.payload.sourcePath,sha256:expected});}
+        catch{assertOwnership();store.transaction(()=>{store.updateWriting(candidate.id,'failed',{status:'failed',stage:candidate.stage,code:'source_import_failed',message:'招标原文件导入写标工作区失败'},clock());store.touchCard(project.id,clock());});continue;}
+        assertOwnership();project=revalidate(candidate.project_id);const current=store.listWriting().find(job=>job.id===candidate.id);
+        if(!current||!canWrite(project,clock())||current.status!=='queued'||source?.sha256!==expected||typeof source?.sourcePath!=='string')continue;
+        if(current.payload.sourcePath!==source.sourcePath||current.payload.sourceChecksum!==source.sha256){
+          store.transaction(()=>{store.resumeWriting(current,{...current.payload,sourcePath:source.sourcePath,sourceChecksum:source.sha256},clock(),current.stage);store.touchCard(project.id,clock());});
+        }
+        continue;
+      }
+      if(!sourceRecovery)continue;
       const stateKey='sourceRecovery:'+candidate.id,backoff=store.get(stateKey);if(backoff?.nextAt>clock())continue;
       let source;try{source=await sourceRecovery({project,job:candidate});}catch{assertOwnership();store.set(stateKey,{nextAt:clock()+60000});continue;}
       assertOwnership();project=revalidate(candidate.project_id);const current=store.listWriting().find(job=>job.id===candidate.id);
-      const expected=String(project?.checksum??'').replace(/^sha256:/i,'').toLowerCase();
       if(!current||!canWrite(project,clock())||current.payload?.sourcePath||source?.sha256!==expected||typeof source?.sourcePath!=='string')continue;
       store.transaction(()=>{store.resumeWriting(current,{...current.payload,sourcePath:source.sourcePath,sourceChecksum:source.sha256},clock(),current.stage);store.set(stateKey,{completed:true});store.touchCard(project.id,clock());});
     }
@@ -134,6 +152,9 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
       if (!result || typeof result.status !== 'string') result = { status: 'failed', code: 'worker_result_invalid' };
       store.transaction(() => {
         if (result.status === 'completed' && result.nextStage) store.updateWriting(job.id, 'queued', result, clock(), result.nextStage);
+        else if (current.stage === 'content' && result.status === 'interrupted' && result.code === 'worker_timeout' && result.checkpointProgressed === true) {
+          store.updateWriting(job.id, 'queued', { ...result, automaticContinuation: true }, clock(), current.stage);
+        }
         else store.updateWriting(job.id, result.status, result, clock());
         store.touchCard(project.id, clock());
       });
@@ -160,9 +181,34 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
         }
         for (const w of store.listWatches(clock())) {
           try {
-            assertOwnership(); const handoff = await preread.getHandoff(w.task_id); assertOwnership();
+            assertOwnership(); const handoff=await preread.getHandoff(w.task_id); assertOwnership();
+            let tenderRun,companyState,companyError;
+            if(typeof preread.getTenderRun==='function'){
+              try{tenderRun=await preread.getTenderRun(w.task_id);}catch{}
+              assertOwnership();
+            }
+            if(typeof preread.getCompanyMatchCard==='function'){
+              try{companyState=await preread.getCompanyMatchCard(w.task_id);}catch{companyError='company_match_unavailable';}
+              assertOwnership();
+            }
             if(!watchActive(w))continue;
-            workflow.ingest({ ...w.payload, handoff }); store.deferWatch(w.task_id, clock());
+            const prereadRunIdentity=tenderRun?.engine==='five_module'&&typeof tenderRun.runId==='string'&&tenderRun.runId&&handoff?.task?.taskId===w.task_id&&String(tenderRun.documentVersion)===String(handoff?.snapshot?.documentVersion)?{taskId:w.task_id,runId:tenderRun.runId,documentVersion:tenderRun.documentVersion}:undefined;
+            const companyMatchCard=companyState?{...companyState,scopeType:companyState.scopeType??'group',scopeId:companyState.scopeId??config.chatId}:undefined;
+            const project=workflow.ingest({ ...w.payload, handoff, ...(companyMatchCard?{companyMatchCard}:{}) });
+            if(prereadRunIdentity){
+              const identityKey='preread-run-identity:'+project.id,previous=store.get(identityKey);
+              if(JSON.stringify(previous)!==JSON.stringify(prereadRunIdentity))store.set(identityKey,prereadRunIdentity);
+            }
+            if(tenderRun){
+              const messageId=typeof tenderRun?.deliveryStatusCardMessageId==='string'?tenderRun.deliveryStatusCardMessageId.trim():'';
+              const runId=typeof tenderRun?.runId==='string'?tenderRun.runId.trim():'';
+              const deliveredAt=typeof tenderRun?.deliveredAt==='string'?tenderRun.deliveredAt.trim():'';
+              if(tenderRun?.engine==='five_module'&&tenderRun.deliveryStatus==='delivered'&&runId&&messageId&&Number.isFinite(Date.parse(deliveredAt))&&String(tenderRun.documentVersion)===String(project.version)){
+                const marker={runId,deliveredAt,messageId,documentVersion:String(project.version)},markerKey='preread-delivery-handoff:'+project.id;
+                store.transaction(()=>{const current=store.getProject(project.id),previous=store.get(markerKey);if(current?.current&&current.messageId===messageId&&JSON.stringify(previous)!==JSON.stringify(marker)){store.set(markerKey,marker);store.touchCard(current.id,clock());}});
+              }
+            }
+            store.deferWatch(w.task_id, clock(),companyError);
           } catch { assertOwnership(); if(watchActive(w))store.deferWatch(w.task_id, clock(), 'handoff_unavailable'); }
         }
       }
@@ -175,10 +221,11 @@ function createRunner({ store, config, workflow, preread, lark, write, recoverSo
       const local = new Date(clock() + 8 * 3600000), day = local.toISOString().slice(0, 10);
       if (local.getUTCHours() >= config.summaryHour) store.enqueueSummary(day, buildSummary(day, store.listProjects(), store.countPendingWatches(config.companyId)));
       if (lark) {
-        const args = { store, client: lark, mode: config.mode, chatId: config.chatId, allowedChats: config.allowedChats, clock, assertOwnership, revalidate };
+        const args = { store, client: lark, preread, mode: config.mode, chatId: config.chatId, allowedChats: config.allowedChats, forbiddenChats: config.forbiddenChats, clock, assertOwnership, revalidate };
         if(groupFileSource)await deliverGroupFileStatus(args);
         if (config.writingRoot) await deliverFiles({ ...args, root: config.writingRoot });
         await deliverOutbox(args);
+        await reconcilePrereadDeliveries(args);
       }
     } finally { running = false; }
   }

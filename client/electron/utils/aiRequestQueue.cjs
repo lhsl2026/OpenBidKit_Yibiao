@@ -26,7 +26,10 @@ function createAiRequestQueue(options = {}) {
     : () => options.limit || 10;
   const fallbackLimit = normalizeLimit(options.defaultLimit, 10);
 
-  function currentLimit() {
+  function currentLimit(jobLimit) {
+    if (jobLimit !== undefined) {
+      return normalizeLimit(jobLimit, fallbackLimit);
+    }
     try {
       return normalizeLimit(getLimit(), fallbackLimit);
     } catch {
@@ -78,7 +81,11 @@ function createAiRequestQueue(options = {}) {
   }
 
   function pump() {
-    while (activeCount < currentLimit() && queue.length) {
+    while (queue.length) {
+      const nextJob = queue[0];
+      if (activeCount >= currentLimit(nextJob.limit)) {
+        break;
+      }
       const job = queue.shift();
       if (job.signal?.aborted) {
         settleJob(job, 'reject', job.signal.reason || new Error('AI 请求已取消'));
@@ -142,6 +149,7 @@ function createAiRequestQueue(options = {}) {
         onAbort: null,
         attempts: 1,
         maxAttempts: Math.max(1, Math.floor(Number(options.maxAttempts) || AI_REQUEST_MAX_ATTEMPTS)),
+        limit: options.limit,
         retryTimer: null,
         state: 'queued',
         settled: false,
@@ -211,7 +219,7 @@ function createAiRequestQueue(options = {}) {
       active: activeCount,
       queued: queue.length,
       retrying: retryingJobs.size,
-      limit: currentLimit(),
+      limit: currentLimit(queue[0]?.limit),
       pausedScopes: [...pausedScopes],
     };
   }

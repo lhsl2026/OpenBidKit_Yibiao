@@ -95,14 +95,20 @@ function createCompanyEvidenceSync({ store, client, companyId }) {
     async replace(built) {
       const profileVersion = built?.collection?.companies?.[0]?.profileVersion;
       if (!profileVersion || built.collection.defaultCompanyId !== companyId) throw Error('company_profile_sync_invalid');
-      if (current?.profileVersion === profileVersion && current?.ready === true) {
+      if (current?.sourceType === 'bid_vault' && current?.profileVersion === profileVersion && current?.ready === true) {
         current = { ...current, coverage: built.coverage };
         return current;
       }
       try {
-        const result = await client.replaceCompanyProfiles(built.collection);
-        if (result?.status !== 'company_profiles_imported' || result.companyCount !== 1 || result.defaultCompanyId !== companyId) throw Error('company_profile_sync_invalid_receipt');
-        current = { ready: true, profileVersion, coverage: built.coverage };
+        const input = {
+          sourceType: 'bid_vault',
+          sourceVersion: profileVersion,
+          syncedAt: new Date().toISOString(),
+          collection: built.collection,
+        };
+        const result = await client.importCompanyProfileSource(input);
+        if (result?.status !== 'company_profile_source_imported' || result.sourceType !== 'bid_vault' || result.sourceVersion !== profileVersion || result.sourceCompanyCount !== built.collection.companies.length) throw Error('company_profile_sync_invalid_receipt');
+        current = { ready: true, sourceType: 'bid_vault', profileVersion, coverage: built.coverage };
         store.set(stateKey, current);
         return current;
       } catch {

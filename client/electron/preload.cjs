@@ -18,7 +18,7 @@ const bridge = {
     load: () => ipcRenderer.invoke('full-bid:load'),
     export: (payload) => ipcRenderer.invoke('full-bid:export', payload),
   },
-  appName: '易标投标工具箱',
+  appName: '联智标',
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('app:get-version'),
   getGpuHardwareAccelerationStatus: () => ipcRenderer.invoke('app:get-gpu-hardware-acceleration-status'),

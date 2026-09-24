@@ -27,8 +27,8 @@ test('queue creates one stable Card 2.0 outbox entry and never calls preread',t=
  assert.match(card.body.elements[0].content,/第 1 步.*第 2 步/s);
  const form=card.body.elements[1],select=form.elements.find(e=>e.tag==='multi_select_static'),submit=form.elements.find(e=>e.form_action_type==='submit');
  assert.equal(form.tag,'form');assert.equal(select.name,'events');assert.deepEqual(select.options.map(o=>o.value),ids);
- assert.equal(submit.name,`openbidkit_selection_${state.batchKey}_${state.challenge}`);assert.equal('behaviors' in submit,false);
- const decline=card.body.elements[2].columns[0].elements[0];assert.deepEqual(decline.behaviors[0].value,{agent:'openbidkit-selection',batchKey:state.batchKey,challenge:state.challenge,action:'decline'});
+ assert.equal(submit.name,`selection_select_${state.batchKey}_${state.challenge}`);assert.equal('behaviors' in submit,false);
+ const decline=card.body.elements[2].columns[0].elements[0];assert.deepEqual(decline.behaviors[0].value,{action:'selection.decline',batchKey:state.batchKey,challenge:state.challenge});
  store.transaction(()=>setupQueueAgain(store));assert.equal(store.listOutbox(Infinity).length,1);
  function setupQueueAgain(target){createSelection({store:target,config:{chatId:'oc_target',operatorIds:['ou_allowed'],companyId:'company'},preread:{select:()=>assert.fail('queue posted')}}).queue(receipt);}
 });
@@ -45,6 +45,42 @@ test('refresh updates an existing waiting card once without creating another mes
 test('same completed callback posts once and nested selection task becomes a watch',async t=>{
  const {store,selection,calls,state}=setup(t);const first=await selection.act(value(state),event());const second=await selection.act(value(state),event());
  assert.equal(calls.length,1);assert.deepEqual(second,first);assert.deepEqual(store.listWatches(Infinity).map(r=>r.task_id),['task-1']);assert.equal(store.getWatch('task-1').payload.sourceInboxId,'source-inbox');
+});
+
+test('completed selection card keeps the selected project visible and shows document acquisition stage',async t=>{
+ const response={status:'selection_processed',selection:{status:'processed',selectedProjects:[{title:'项目二'}],results:[{status:'triggered',taskId:'task-2',acquisition:{status:'waiting_upload',errorCode:'complete_tender_document_missing',actionId:'123e4567-e89b-12d3-a456-426614174099'}}]}};
+ const {store,selection,state}=setup(t,async()=>response);
+ await selection.act(value(state),event('selected-project-visible',[ids[1]]));
+ const card=JSON.parse(store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(state.outboxId).payload);
+ const text=JSON.stringify(card);
+ assert.equal(card.header.title.content,'已转入预读');
+ assert.match(text,/选择卡已退役并移除操作按钮，后续以最新预读卡为准/);
+ assert.equal(text.includes('"tag":"button"'),false);
+ assert.match(text,/项目二/);
+ assert.match(text,/正在获取招标文件/);
+ assert.doesNotMatch(text,/项目一/);
+});
+
+test('startup refresh upgrades an already completed selection card without creating another message',async t=>{
+ const response={status:'selection_processed',selection:{status:'processed',selectedProjects:[{title:'项目二'}],results:[{status:'triggered',taskId:'task-2',acquisition:{status:'waiting_upload',errorCode:'complete_tender_document_missing',actionId:'123e4567-e89b-12d3-a456-426614174099'}}]}};
+ const {store,selection,state}=setup(t,async()=>response);
+ await selection.act(value(state),event('selected-project-refresh',[ids[1]]));
+ store.db.prepare("UPDATE outbox SET payload='{}',delivered=1 WHERE id=?").run(state.outboxId);
+ assert.equal(selection.refreshWaitingCards(),1);
+ const card=JSON.parse(store.db.prepare('SELECT payload FROM outbox WHERE id=?').get(state.outboxId).payload);
+ assert.match(JSON.stringify(card),/项目二/);
+ assert.match(JSON.stringify(card),/正在获取招标文件/);
+ assert.equal(store.db.prepare('SELECT COUNT(*) n FROM outbox').get().n,1);
+});
+
+test('startup refresh never requeues a selection card from a retired or forbidden chat',t=>{
+ const store=createStore(':memory:');t.after(()=>store.close());
+ const legacy=createSelection({store,config:{chatId:'oc_retired',allowedChats:['oc_retired'],forbiddenChats:[],operatorIds:['ou_allowed'],companyId:'company'},preread:{select:()=>assert.fail('posted')}});
+ const state=store.transaction(()=>legacy.queue(receipt,{inboxId:'legacy-source'}));
+ store.db.prepare("UPDATE outbox SET payload='{}',delivered=1 WHERE id=?").run(state.outboxId);
+ const current=createSelection({store,config:{chatId:'oc_target',allowedChats:['oc_target'],forbiddenChats:['oc_retired'],operatorIds:['ou_allowed'],companyId:'company'},preread:{select:()=>assert.fail('posted')}});
+ assert.equal(current.refreshWaitingCards(),0);
+ const row=store.db.prepare('SELECT payload,delivered FROM outbox WHERE id=?').get(state.outboxId);assert.equal(row.payload,'{}');assert.equal(row.delivered,1);
 });
 
 test('identity, message, challenge, token integrity and selection subset fail before POST',async t=>{
@@ -72,10 +108,12 @@ test('processing keeps the original event retryable and never widens selection',
  await selection.act(value(state),event('processing',chosen));assert.equal(calls.length,2);assert.deepEqual(calls.map(c=>c.eventIds),[chosen,chosen]);assert.ok(calls.every(c=>c.action==='select_events'));
 });
 
-test('terminal batches reject new callback events and decline success is not rendered as selected',async t=>{
+test('terminal batches return explicit idempotent results for new callback event IDs',async t=>{
+ const selected=setup(t);await selected.selection.act(value(selected.state),event('selected-once'));
+ assert.deepEqual(await selected.selection.act(value(selected.state),event('selected-replay')), {status:'already_transferred'});assert.equal(selected.calls.length,1);
  const {store,selection,calls,state,stateKey}=setup(t,async()=>({status:'selection_processed',selection:{status:'processed',selectedProjects:[],declinedProjects:[{}],results:[]}}));
  await selection.act(value(state,'decline'),event('decline',[]));assert.equal(store.get(stateKey).status,'declined');
- await assert.rejects(selection.act(value(state,'decline'),event('new-event',[])),/closed/);assert.equal(calls.length,1);
+ assert.deepEqual(await selection.act(value(state,'decline'),event('new-event',[])),{status:'already_closed'});assert.equal(calls.length,1);
 });
 
 test('an incomplete waiting-project mapping makes the whole batch manual with no card',t=>{

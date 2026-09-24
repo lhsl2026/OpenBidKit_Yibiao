@@ -1,5 +1,5 @@
 const {key}=require('./store.cjs');
-const {canGenerateDraft}=require('./writing-policy.cjs');
+const {canGenerateDraft,canGenerateReviewedDraft}=require('./writing-policy.cjs');
 function validateInput(input){
   const h=input?.handoff,s=h?.snapshot;
   if(!input.companyId||h?.schemaVersion!=='1.0'||!h.task?.taskId||!h.task?.title||!s?.documentVersion||!s.reportId||!s.checksum||!Number.isFinite(Date.parse(s.generatedAt))||!Array.isArray(h.requirements)||!Array.isArray(h.warnings)||!Array.isArray(h.evidence))throw new Error('invalid_handoff');
@@ -35,12 +35,12 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
     revalidate,
     ingest(input){validateInput(input);input=normalize(input);return store.transaction(()=>{
       const h=input.handoff,s=h.snapshot,now=clock();const version=String(s.documentVersion);const id=key(h.task.taskId,input.companyId,version);
-      const existing=store.getProject(id);const assessment=assessed(input);
-      if(existing){if(!existing.current)throw new Error('stale_handoff');if(existing.checksum!==s.checksum)throw new Error('version_conflict');if(JSON.stringify(existing.assessment)!==JSON.stringify(assessment)||JSON.stringify(existing.input)!==JSON.stringify(input))return store.reassess(id,assessment,now,input);return existing;}
+      let existing=store.getProject(id);const assessment=assessed(input);const prereadCard=/^om_[A-Za-z0-9_-]+$/.test(input.companyMatchCard?.sourceCardMessageId??'')?input.companyMatchCard.sourceCardMessageId:null;
+      if(existing){if(!existing.current)throw new Error('stale_handoff');if(existing.checksum!==s.checksum)throw new Error('version_conflict');if(!existing.messageId&&prereadCard){store.bindMessage(existing.id,prereadCard);existing=store.getProject(existing.id);}if(JSON.stringify(existing.assessment)!==JSON.stringify(assessment)||JSON.stringify(existing.input)!==JSON.stringify(input))return store.reassess(id,assessment,now,input);return existing;}
       const current=store.current(h.task.taskId,input.companyId);
       if(current&&Date.parse(current.generatedAt)>=Date.parse(s.generatedAt))throw new Error('stale_handoff');
       if(current)store.supersede(current.id);
-      const p={id,taskId:h.task.taskId,companyId:input.companyId,version,checksum:s.checksum,generatedAt:s.generatedAt,input,assessment,messageId:current?.messageId,created:now,revision:1};store.saveProject(p);return store.getProject(id);
+      const p={id,taskId:h.task.taskId,companyId:input.companyId,version,checksum:s.checksum,generatedAt:s.generatedAt,input,assessment,messageId:current?.messageId??prereadCard,created:now,revision:1};store.saveProject(p);return store.getProject(id);
     });},
     act(action){
       if(!chatId||action.chatId!==chatId||!operatorIds.includes(action.actorId))throw new Error('actor_not_allowed');
@@ -64,9 +64,21 @@ function createWorkflow({store,assess,normalizeInput=input=>input,clock=Date.now
         if(p.humanDecision!=='follow')throw new Error('follow_required');
         const currentAssessment=assessed(p.input);
         if(JSON.stringify(p.assessment)!==JSON.stringify(currentAssessment))throw new Error('writing_not_ready');
-        if(!canGenerateDraft(p,clock()))throw new Error('writing_not_ready');
+        const actionTime=clock();
+        if(!canGenerateDraft(p,actionTime))throw new Error('writing_not_ready');
         let jobId;
-        if(action.action==='write')jobId=store.enqueueWriting(p,clock());
+        if(action.action==='write'){
+          let queuedProject=p;
+          if(canGenerateReviewedDraft(p,actionTime)){
+            const handoff=p.input.handoff,snapshot=handoff.snapshot;
+            const reviewAuthorization={
+              type:'reviewed_placeholder_draft',projectId:p.id,documentVersion:String(snapshot.documentVersion),reportId:snapshot.reportId,
+              warningCodes:handoff.warnings.map(warning=>warning.code).sort(),confirmedAt:new Date(actionTime).toISOString(),actionEventId:action.eventId,
+            };
+            queuedProject={...p,input:{...p.input,reviewAuthorization}};
+          }
+          jobId=store.enqueueWriting(queuedProject,actionTime);
+        }
         else{
           const job=store.listWriting().find(j=>j.project_id===p.id);if(!job)throw Error('writing_missing');jobId=job.id;
           if(action.action==='retry'){

@@ -20,7 +20,7 @@ const snapshot = { records: [{
 
 test('application imports the current evidence profile once and exposes readiness', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'company-main-')); let imports = 0;
-  const preread = { replaceCompanyProfiles: async body => { imports += 1; return { status: 'company_profiles_imported', companyCount: body.companies.length, defaultCompanyId: body.defaultCompanyId }; } };
+  const preread = { importCompanyProfileSource: async body => { imports += 1; return { status: 'company_profile_source_imported', sourceType: body.sourceType, sourceVersion: body.sourceVersion, companyCount: body.collection.companies.length, sourceCompanyCount: body.collection.companies.length, defaultCompanyId: body.collection.defaultCompanyId }; } };
   const app = createApplication(configFor(root), { readEvidence: async () => ({ snapshot, rules: [] }), prereadFactory: () => preread });
   t.after(async () => { await app.close(); fs.rmSync(root, { recursive: true, force: true }); });
   await app.start(); await app.refreshEvidence();
@@ -31,7 +31,7 @@ test('application imports the current evidence profile once and exposes readines
 
 test('a rejected profile import conservatively degrades readiness', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'company-main-fail-'));
-  const preread = { replaceCompanyProfiles: async () => { throw Error('remote'); } };
+  const preread = { importCompanyProfileSource: async () => { throw Error('remote'); } };
   const app = createApplication(configFor(root), { readEvidence: async () => ({ snapshot, rules: [] }), prereadFactory: () => preread });
   t.after(async () => { await app.close(); fs.rmSync(root, { recursive: true, force: true }); });
   await app.start();

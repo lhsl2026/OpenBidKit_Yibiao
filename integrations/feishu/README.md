@@ -53,8 +53,9 @@ npm.cmd start
 | `BID_OPERATOR_IDS` | 可做判标和编写确认的员工 open_id 白名单 |
 | `BID_CHAT_ID` / `BID_TEST_CHAT_IDS` | 唯一结果群，且必须包含于测试群白名单 |
 | `BID_DELIVERY_MODE` | 默认 `disabled`；联调使用 `test`，正式门禁通过后才使用 `production` |
-| `BID_PRODUCTION_CHAT_ID` / `BID_PRODUCTION_CHAT_IDS` | 与测试群完全分离的正式目标及白名单；预发布时可先填写 |
+| `BID_PRODUCTION_CHAT_ID` / `BID_PRODUCTION_CHAT_IDS` | 正式目标“隆创投标决策群”及白名单，必须与测试群完全分离；预发布时可先填写 |
 | `BID_PRODUCTION_CUTOVER` | 正式切流开关；只有 `production` 模式允许设为 `true` |
+| `BID_FORBIDDEN_CHAT_IDS` | 永久禁止写入的历史群 ID；活动、测试或正式目标与其交叉时拒绝启动 |
 | `MODEL_PROVIDER` | 易标模型 provider，OpenAI 兼容自定义接口可用 `custom` |
 | `MODEL_PROVIDER_BASE_URL` / `MODEL_PROVIDER_API_KEY` / `MODEL_PROVIDER_MODEL` | 易标文本模型地址、凭证及模型名 |
 | `BID_SUMMARY_HOUR` | 北京时间每日摘要小时，默认 18 |

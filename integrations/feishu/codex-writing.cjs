@@ -2,6 +2,7 @@
 const { randomUUID } = require('node:crypto');
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const text = value => typeof value === 'string' ? value.trim() : '';
+const CODEX_WRITING_REQUEST_TIMEOUT_MS = 600_000;
 
 function normalizeCodexModelConfig(config) {
   const source = config.text_model_profiles?.custom || {};
@@ -48,7 +49,7 @@ function createCodexWritingAdapter({ aiService, workspaceStore, knowledgeBaseSer
     return { state, content: JSON.stringify({ project: state.projectOverview, requirements: state.techRequirements, tender, wordControl: state.outlineWordControlOptions }) };
   }
   async function json(system, prompt) {
-    const content = await aiService.chat({ messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], response_format: { type: 'json_object' }, timeout_ms: 330000, logTitle: 'Codex 纯文本目录' });
+    const content = await aiService.chat({ messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], response_format: { type: 'json_object' }, timeout_ms: CODEX_WRITING_REQUEST_TIMEOUT_MS, logTitle: 'Codex 纯文本目录' });
     let result; try { result = JSON.parse(content); } catch { fail('outline_json_invalid'); }
     if (!result || !Array.isArray(result.outline) || !result.outline.length || result.outline.length > 50) fail('outline_json_invalid');
     return result.outline;
@@ -90,7 +91,15 @@ function createCodexWritingAdapter({ aiService, workspaceStore, knowledgeBaseSer
     const checkpointTask = (patch, partial = {}) => { task = { ...task, ...patch, updated_at: clock() }; save({ ...partial, globalFactsTask: task }); };
     try {
       await runGlobalFactsTask({ aiService, workspaceStore, knowledgeBaseService, payload: { globalFactsMode: 'placeholder' }, updateTask: checkpointTask, checkpointTask });
-    } catch (error) { checkpointTask({ status: 'error', error: 'codex_fact_generation_failed' }); throw error; }
+    } catch (error) {
+      const diagnostic = `${error?.code || ''} ${error?.message || ''}`;
+      const code = /(?:execution_timeout|codex_timeout|AI 请求超时)/i.test(diagnostic)
+        ? 'codex_fact_generation_timeout'
+        : 'codex_fact_generation_failed';
+      checkpointTask({ status: 'error', error: code });
+      if (code === 'codex_fact_generation_timeout') fail(code);
+      throw error;
+    }
   }
   return { generateInitialOutline, expandOutline, generateFacts };
 }

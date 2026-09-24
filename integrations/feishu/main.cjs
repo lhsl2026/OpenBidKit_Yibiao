@@ -9,6 +9,7 @@ const { createPrereadClient } = require('./preread.cjs');
 const { createLarkClient } = require('./lark.cjs');
 const { createRunner } = require('./runner.cjs');
 const { createCardSource, toWorkflowAction } = require('./card-source.cjs');
+const { createPrereadCardRelay } = require('./preread-card-relay.cjs');
 const { createSelection } = require('./selection.cjs');
 const { createDocumentRecovery } = require('./document-recovery.cjs');
 const { createReportArchive } = require('./report-archive.cjs');
@@ -38,7 +39,24 @@ function readEvidenceInWorker(config, { signal } = {}) {
     worker.once('exit', () => { if (!settled) finish(Error('snapshot_unavailable')); });
   });
 }
-function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, groupFileSourceFactory = createGroupFileSource, codexBridgeFactory, prereadFactory = createPrereadClient } = {}) {
+const reviewText=(value,max=240)=>typeof value==='string'&&value.trim()?value.trim().slice(0,max):undefined;
+function compactCompanyReview(review,state,company){
+  const enabled=Array.isArray(state?.companies)?state.companies.filter(candidate=>candidate?.enabled!==false):[];
+  const implicitSingle=state?.selectedCompanyId==null&&state?.selectedCompanyProfileVersion==null&&enabled.length===1&&enabled[0]?.companyId===company?.companyId&&enabled[0]?.profileVersion===company?.profileVersion;
+  const identityMatches=implicitSingle?review?.companyId==null&&review?.companyProfileVersion==null:review?.companyId===state?.selectedCompanyId&&review?.companyProfileVersion===state?.selectedCompanyProfileVersion;
+  if(!review||review.taskId!==state.taskId||review.runId!==state.runId||!identityMatches||!Array.isArray(review.items))throw Error('company_match_review_stale');
+  const statuses=new Set(['confirmed_met','gap','not_applicable','unconfirmed','company_profile_missing','pending_manual_confirmation','pending_match']);
+  const items=review.items.slice(0,50).flatMap(item=>{
+    const id=reviewText(item?.id,128),requirement=reviewText(item?.requirement),matchStatus=reviewText(item?.matchStatus,64);
+    if(!id||!requirement||!matchStatus||!statuses.has(matchStatus))return[];
+    const page=Number.isInteger(item?.evidence?.page)&&item.evidence.page>0?item.evidence.page:undefined;
+    return[{id,requirement,matchStatus,...(reviewText(item.evidenceRequirement)?{evidenceRequirement:reviewText(item.evidenceRequirement)}:{}),...(reviewText(item.gapAction)?{gapAction:reviewText(item.gapAction)}:{}),...(page?{page}:{})}];
+  });
+  const counts={confirmed:0,pending:0,gaps:0,notApplicable:0};
+  for(const item of items){if(item.matchStatus==='confirmed_met')counts.confirmed++;else if(item.matchStatus==='gap')counts.gaps++;else if(item.matchStatus==='not_applicable')counts.notApplicable++;else counts.pending++;}
+  return{taskId:review.taskId,runId:review.runId,companyId:implicitSingle?company.companyId:review.companyId,companyProfileVersion:implicitSingle?company.profileVersion:review.companyProfileVersion,counts,items};
+}
+function createApplication(config, { readEvidence = readEvidenceInWorker, clock = Date.now, cardSourceFactory = createCardSource, prereadCardRelayFactory = createPrereadCardRelay, selectionFactory = createSelection, documentRecoveryFactory = createDocumentRecovery, groupFileSourceFactory = createGroupFileSource, codexBridgeFactory, prereadFactory = createPrereadClient } = {}) {
   const store = createStore(path.join(config.dataRoot, 'workflow.sqlite3'));
   const snapshotController = new AbortController();
   let snapshot = { records: [], warnings: ['vault_not_configured'] }, snapshotAt = 0, vaultReady = false, rules = [];
@@ -103,7 +121,29 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
   reportArchive = createReportArchive({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership() });
   writingConfirmationDoc = createWritingConfirmationDoc({ store, config, clock, assertOwnership: () => runner.assertOwnership() });
   selection = selectionFactory({ store, config, preread, clock, assertOwnership: () => runner.assertOwnership(), onReceipt: (receipt, meta) => documentRecovery.queueReceipt(receipt, meta) });
-  const dispatchCardAction = (value, event, route) => (route==='preread'||(!route&&value.agent==='openbidkit-group-file')) ? groupFileSource.select(value,event) : (route==='selection'||(!route&&value.agent==='openbidkit-selection')) ? selection.act(value, event) : workflow.act(toWorkflowAction(value, event));
+  const handleCompanyMatchAction=async(value,event)=>{
+    if(!preread||!['select','review'].includes(value.action))throw Error('company_match_action_invalid');
+    const action={eventId:event.eventId,chatId:event.chatId,operatorId:event.actorId,sourceCardMessageId:event.messageId,action:value.action==='select'?'select_company':'review_company_match',taskId:value.taskId,runId:value.runId,documentVersion:value.documentVersion,companyId:value.companyId,companyProfileVersion:value.companyProfileVersion,scopeType:value.scopeType,scopeId:value.scopeId};
+    const hash=store.key(action),saved=store.getAction(event.eventId);if(saved){if(saved.hash!==hash)throw Error('event_conflict');return saved.result;}
+    const p=store.getProject(value.projectId),state=p?.input?.companyMatchCard;
+    if(!p?.current||p.version!==value.version||!p.messageId||p.messageId!==event.messageId||value.sourceCardMessageId!==event.messageId||store.key(p.input,p.assessment)!==value.cardKey)throw Error('company_match_card_stale');
+    const groupMember=value.scopeType==='group'&&value.scopeId===event.chatId&&event.chatId===config.chatId;
+    const privateOperator=value.scopeType==='private'&&value.scopeId===event.actorId&&config.operatorIds?.includes(event.actorId);
+    if(!groupMember&&!privateOperator)throw Error('company_match_scope_mismatch');
+    const company=state?.companies?.find(candidate=>candidate.enabled!==false&&candidate.companyId===value.companyId);
+    if(state?.taskId!==value.taskId||state?.runId!==value.runId||state?.documentVersion!==value.documentVersion||state?.sourceCardMessageId!==value.sourceCardMessageId||!company||company.profileVersion!==value.companyProfileVersion)throw Error('company_match_card_stale');
+    const result=await preread.select(action);
+    if(value.action==='select'){
+      const [handoff,companyState]=await Promise.all([preread.getHandoff(value.taskId),preread.getCompanyMatchCard(value.taskId)]);
+      workflow.ingest({...p.input,handoff,companyMatchCard:{...companyState,scopeType:companyState.scopeType??value.scopeType,scopeId:companyState.scopeId??value.scopeId}});
+    }else{
+      store.set('company-match-review:'+p.id,compactCompanyReview(result?.review,state,company));
+      store.touchCard(p.id,clock());
+    }
+    store.saveAction(event.eventId,hash,result,clock());return result;
+  };
+  const prereadCardRelay=prereadCardRelayFactory({config});
+  const dispatchCardAction = (value, event, route) => route==='preread_callback'?prereadCardRelay.handle(value.raw):(route==='preread'||(!route&&value.agent==='openbidkit-group-file')) ? groupFileSource.select(value,event) : (route==='selection'||(!route&&value.agent==='openbidkit-selection')) ? selection.act(value, event) : route==='company_match'&&['select','review'].includes(value.action)?handleCompanyMatchAction(value,event):workflow.act(toWorkflowAction(value, event));
   const cardSource = cardSourceFactory({ config, workflow, assertOwnership: () => runner.assertOwnership(), clock,
     onAction: dispatchCardAction });
   const makeCodexBridge = codexBridgeFactory ?? (args => require('./codex-bridge.cjs').createCodexBridge({
@@ -115,6 +155,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
   function readiness() {
     const missing = [];
     const cardState = cardSource.status();
+    const prereadCardState=prereadCardRelay.status();
     if (!config.companyId) missing.push('company');
     if (!config.apiKey) missing.push('internal_api_key');
     if (!fresh()) missing.push('vault');
@@ -126,6 +167,7 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
     if (config.radarPolling?.enabled && config.sourceChats.some(chat=>{const s=store.get('radar-source:'+chat);return !s?.lastSuccessAt||s.error||clock()-s.lastSuccessAt>300000;})) missing.push('radar_source');
     const groupFileState=groupFileSource.status();if(config.groupFileSource?.enabled&&(!groupFileState.lastSuccessAt||groupFileState.error||clock()-groupFileState.lastSuccessAt>300000))missing.push('group_file_source');
     if (!config.operatorIds.length || (config.cardSource?.enabled ? !cardState.ready : !config.verificationToken || !config.encryptKey)) missing.push('card_callback');
+    if(config.prereadCardRelay?.enabled&&!prereadCardState.ready)missing.push('preread_card_callback');
     const delivery = config.mode === 'production'
       ? { target: 'production', configured: Boolean(config.production?.cutover && config.chatId === config.production.chatId && config.allowedChats?.includes(config.chatId)) }
       : config.mode === 'test'
@@ -144,10 +186,10 @@ function createApplication(config, { readEvidence = readEvidenceInWorker, clock 
       lastReadyAt: Number.isFinite(cardState.lastReadyAt) ? cardState.lastReadyAt : null,
       lastEventAt: Number.isFinite(cardState.lastEventAt) ? cardState.lastEventAt : null,
     };
-    return { ready: missing.length === 0, mode: config.mode, delivery, cardCallback, missing };
+    return { ready: missing.length === 0, mode: config.mode, delivery, cardCallback, prereadCardCallback:prereadCardState, missing };
   }
   const server = createHttpServer({ config, workflow, store, readiness, radar: runner.receiveRadar, onCardAction: dispatchCardAction, assertOwnership: assertRuntime });
-  return { store, workflow, runner, cardSource, selection, documentRecovery, groupFileSource, reportArchive, writingConfirmationDoc, companyEvidence, codexBridge, server, readiness, refreshEvidence,
+  return { store, workflow, runner, cardSource, prereadCardRelay, selection, documentRecovery, groupFileSource, reportArchive, writingConfirmationDoc, companyEvidence, codexBridge, server, readiness, refreshEvidence,
     async start() {
       if (!runner.acquire()) throw Error('runner_instance_active');
       fenced = true;

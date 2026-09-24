@@ -60,9 +60,34 @@ test('editing during handoff await prevents stale ingest and watch resurrection'
  const ticking=runner.tick();await new Promise(setImmediate);runner.receiveRadar({...original,eventId:'two',content:'edited'});resolveHandoff({schemaVersion:'1.0'});await ticking;
  assert.equal(ingested,0);assert.equal(store.getWatch('task'),null);await runner.close();store.close();
 });
+test('successful watch polling binds current company options and card scope to the same project input',async()=>{
+ const store=createStore(':memory:');store.watch('task',{companyId:'company'});let ingested;
+ const handoff={task:{taskId:'task'},companyMatch:{companyId:'company-a'}};
+ const companyMatchCard={taskId:'task',runId:'11111111-1111-4111-8111-111111111111',documentVersion:3,sourceCardMessageId:'om_card',companies:[{companyId:'company-a',companyName:'甲公司',profileVersion:'v1',enabled:true}]};
+ const runner=createRunner({store,config:{companyId:'company',sourceChats:[],sourceSenders:[],chatId:'oc_test',mode:'disabled',summaryHour:18,radarPolling:{enabled:false}},workflow:{ingest:value=>{ingested=value;}},preread:{getHandoff:async()=>handoff,getCompanyMatchCard:async()=>companyMatchCard},clock:()=>1000});
+ await runner.tick();assert.deepEqual(ingested,{companyId:'company',handoff,companyMatchCard:{...companyMatchCard,scopeType:'group',scopeId:'oc_test'}});await runner.close();store.close();
+});
+test('company match card unavailability does not block successful handoff ingestion',async()=>{
+ const store=createStore(':memory:');store.watch('task',{companyId:'company'});let ingested;
+ const handoff={task:{taskId:'task'},snapshot:{documentVersion:'1'}};
+ const tenderRun={engine:'five_module',runId:'11111111-1111-4111-8111-111111111111',documentVersion:1,currentModule:'gap_analysis',deliveryStatus:'pending'};
+ const runner=createRunner({store,config:{companyId:'company',sourceChats:[],sourceSenders:[],chatId:'oc_test',mode:'disabled',summaryHour:18,radarPolling:{enabled:false}},workflow:{ingest:value=>{ingested=value;return{id:'project',version:'1'};}},preread:{getHandoff:async()=>handoff,getTenderRun:async()=>tenderRun,getCompanyMatchCard:async()=>{throw Error('company_match_card_unavailable');}},clock:()=>1000});
+ await runner.tick();assert.deepEqual(ingested,{companyId:'company',handoff});const identity=store.get('preread-run-identity:project');assert.deepEqual(identity,{taskId:'task',runId:tenderRun.runId,documentVersion:1});assert.equal(Object.hasOwn(identity,'currentModule'),false);assert.equal(Object.hasOwn(identity,'deliveryStatus'),false);const watch=store.getWatch('task');assert.equal(watch.last_error,'company_match_unavailable');assert.equal(watch.attempts,1);await runner.close();store.close();
+});
 test('formal group file polling and advancement run only while the runner lease is owned',async t=>{
  const store=createStore(':memory:');const calls=[];const groupFileSource={poll:async()=>{calls.push('poll');},tick:async()=>{calls.push('tick');}};
  const runner=createRunner({store,config:{companyId:'company',sourceChats:[],sourceSenders:[],mode:'disabled',summaryHour:18,radarPolling:{enabled:false}},workflow:{ingest:()=>{}},groupFileSource,clock:()=>1000});t.after(()=>runner.close());
  await runner.tick();assert.deepEqual(calls,['poll','tick']);assert.equal(runner.isRunning(),false);
  await runner.close();await runner.tick();assert.deepEqual(calls,['poll','tick']);store.close();
+});
+
+test('terminal five-module delivery hands the shared card back to OpenBid exactly once',async t=>{
+ const {createWorkflow}=require('../workflow.cjs');const store=createStore(':memory:');let now=1000;
+ const handoff={schemaVersion:'1.0',task:{taskId:'task',title:'桐梓县项目'},snapshot:{documentVersion:'1',reportId:'report',checksum:'a'.repeat(64),generatedAt:'2026-09-22T02:48:51.649Z'},latestDocumentVersion:'1',status:'needs_manual',requirements:[],warnings:[{code:'report_requires_review',blocked:true}],evidence:[]};
+ const workflow=createWorkflow({store,assess:()=>({decision:'review',items:[],blockers:['handoff_needs_manual'],actions:['request_verification']}),clock:()=>now,chatId:'formal',operatorIds:['operator']});
+ const project=workflow.ingest({companyId:'company',handoff});store.bindMessage(project.id,'om_shared');store.decide(project.id,'follow','operator',now);store.db.prepare('UPDATE outbox SET delivered=1').run();store.watch('task',{companyId:'company'});
+ const preread={getHandoff:async()=>handoff,getTenderRun:async()=>({engine:'five_module',runId:'run-1',documentVersion:1,deliveryStatus:'delivered',deliveryStatusCardMessageId:'om_shared',deliveredAt:'2026-09-22T04:52:00.000Z'})};
+ const runner=createRunner({store,config:{companyId:'company',sourceChats:[],sourceSenders:[],mode:'disabled',summaryHour:18,radarPolling:{enabled:false}},workflow,preread,clock:()=>now});t.after(async()=>{await runner.close();store.close();});
+ await runner.tick();let current=store.getProject(project.id);assert.equal(current.humanDecision,'follow');assert.equal(current.revision,3);assert.equal(store.listOutbox(Infinity).filter(row=>row.project_id===project.id).length,1);
+ store.db.prepare('UPDATE watches SET next_at=0').run();now+=1;await runner.tick();current=store.getProject(project.id);assert.equal(current.revision,3);assert.equal(store.listOutbox(Infinity).filter(row=>row.project_id===project.id).length,1);
 });

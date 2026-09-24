@@ -79,17 +79,74 @@ test('equivalent snapshots produce the same profileVersion regardless of input o
 
 test('profile synchronization is idempotent and failed imports make it unready', async () => {
   let calls = 0;
+  const wikiQualification = { id: 'wiki-qualification', name: 'ISO27001' };
+  let canonical = { qualifications: [wikiQualification], performances: [] };
   const state = new Map();
   const store = { get: key => state.get(key), set: (key, value) => state.set(key, value) };
-  const client = { replaceCompanyProfiles: async () => { calls += 1; return { status: 'company_profiles_imported', companyCount: 1, defaultCompanyId: COMPANY }; } };
+  const client = {
+    importCompanyProfileSource: async input => {
+      calls += 1;
+      assert.equal(input.sourceType, 'bid_vault');
+      assert.equal(input.sourceVersion, input.collection.companies[0].profileVersion);
+      assert.match(input.syncedAt, /^20\d{2}-/u);
+      canonical = {
+        qualifications: canonical.qualifications,
+        performances: input.collection.companies[0].performances,
+      };
+      return {
+        status: 'company_profile_source_imported',
+        sourceType: 'bid_vault',
+        sourceVersion: input.sourceVersion,
+        companyCount: 2,
+        sourceCompanyCount: 1,
+        defaultCompanyId: COMPANY,
+      };
+    },
+  };
   const sync = createCompanyEvidenceSync({ store, client, companyId: COMPANY });
   const built = buildCompanyEvidenceProfile({ records: [performance()] }, { companyId: COMPANY });
   await sync.replace(built);
   await sync.replace(built);
   assert.equal(calls, 1);
-  assert.deepEqual(sync.status(), { ready: true, profileVersion: built.collection.companies[0].profileVersion, coverage: built.coverage });
+  assert.deepEqual(canonical.qualifications, [wikiQualification]);
+  assert.equal(canonical.performances.length, 1);
+  assert.deepEqual(sync.status(), { ready: true, sourceType: 'bid_vault', profileVersion: built.collection.companies[0].profileVersion, coverage: built.coverage });
 
-  const failed = createCompanyEvidenceSync({ store: { get: () => undefined, set: () => {} }, client: { replaceCompanyProfiles: async () => { throw Error('remote detail'); } }, companyId: COMPANY });
+  const failed = createCompanyEvidenceSync({ store: { get: () => undefined, set: () => {} }, client: { importCompanyProfileSource: async () => { throw Error('remote detail'); } }, companyId: COMPANY });
   await assert.rejects(() => failed.replace(built), /company_profile_sync_failed/);
   assert.deepEqual(failed.status(), { ready: false, error: 'company_profile_sync_failed' });
+});
+
+test('legacy ready cache is re-imported once as a bid_vault source', async () => {
+  const built = buildCompanyEvidenceProfile({ records: [performance()] }, { companyId: COMPANY });
+  const key = `company-profile-sync:${COMPANY}`;
+  const state = new Map([[key, {
+    ready: true,
+    profileVersion: built.collection.companies[0].profileVersion,
+    coverage: built.coverage,
+  }]]);
+  let calls = 0;
+  const sync = createCompanyEvidenceSync({
+    store: { get: value => state.get(value), set: (value, payload) => state.set(value, payload) },
+    client: {
+      importCompanyProfileSource: async input => {
+        calls += 1;
+        return {
+          status: 'company_profile_source_imported',
+          sourceType: 'bid_vault',
+          sourceVersion: input.sourceVersion,
+          companyCount: 1,
+          sourceCompanyCount: 1,
+          defaultCompanyId: 'canonical-company-1',
+        };
+      },
+    },
+    companyId: COMPANY,
+  });
+
+  await sync.replace(built);
+  await sync.replace(built);
+
+  assert.equal(calls, 1);
+  assert.equal(sync.status().sourceType, 'bid_vault');
 });

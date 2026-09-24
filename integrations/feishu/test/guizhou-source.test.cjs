@@ -132,6 +132,39 @@ test('recovers the only trusted announcement PDF as an explicitly incomplete att
   assert.equal(calls.length, 3);
 });
 
+test('selects a clearly labelled sale-version tender PDF when the same announcement also has a transaction notice PDF', async () => {
+  const tenderUrl = 'https://ggzy.guizhou.gov.cn/hallweb/hall/attach/nosession/download?attachId=20aa3f5a-eb4d-4f37-89de-cca0c503f726';
+  const noticeUrl = 'https://ggzy.guizhou.gov.cn/hallweb/hall/attach/nosession/download?attachId=c8fc3fdf-8f73-4464-a830-9613c63925c3';
+  const calls = [];
+  const fetchImpl = fakeFetch([
+    { url: SOURCE_URL, response: response(pageHtml(), { type: 'text/html' }) },
+    {
+      url: DETAIL_URL,
+      response: response(detailJson(
+        `<a href="${tenderUrl}">公开招标货物-印江十三幼（发售版9-21）.pdf</a>`
+        + `<a href="${noticeUrl}">交易公告.pdf</a>`,
+      ), { type: 'application/json' }),
+    },
+    {
+      url: tenderUrl,
+      response: response(PDF, {
+        type: 'application/octet-stream',
+        disposition: 'attachment; filename*=UTF-8\'\'%E5%85%AC%E5%BC%80%E6%8B%9B%E6%A0%87%E8%B4%A7%E7%89%A9-%E5%8D%B0%E6%B1%9F%E5%8D%81%E4%B8%89%E5%B9%BC%EF%BC%88%E5%8F%91%E5%94%AE%E7%89%889-21%EF%BC%89.pdf',
+      }),
+    },
+  ], calls);
+
+  const result = await createGuizhouSource({ fetchImpl }).recover({ sourceUrl: SOURCE_URL });
+
+  assert.equal(result.status, 'obtained');
+  assert.deepEqual(result.bytes, PDF);
+  assert.equal(result.fileName, '公开招标货物-印江十三幼（发售版9-21）-招标文件正文.pdf');
+  assert.equal(result.sha256, sha256(PDF));
+  assert.equal(result.provenance.tenderPdfUrl, tenderUrl);
+  assert.equal(result.provenance.tenderPdfSha256, sha256(PDF));
+  assert.deepEqual(calls.map(call => call.url), [SOURCE_URL, DETAIL_URL, tenderUrl]);
+});
+
 test('fails closed for ambiguous or untrusted announcement PDF candidates', async () => {
   const fixtures = [
     {

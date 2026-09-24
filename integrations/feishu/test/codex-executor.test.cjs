@@ -348,10 +348,11 @@ test('authStatus creates its configured cwd before the first login status probe'
 
 test('validates executor limits and keeps reasoning effort fixed to low', () => {
   const base = { executable: 'C:\\codex.exe', model: 'gpt-6-astra', root: os.tmpdir() };
+  assert.doesNotThrow(() => createCodexExecutor({ ...base, timeoutMs: 480_000 }));
   for (const options of [
     { ...base, executable: 'codex.exe' },
     { ...base, model: '' },
-    { ...base, timeoutMs: 300_001 },
+    { ...base, timeoutMs: 600_001 },
     { ...base, timeoutMs: 0 },
     { ...base, maxInputBytes: 0 },
     { ...base, maxOutputBytes: -1 },

@@ -144,7 +144,7 @@
 
 ### ⬇️ Download
 
-Download the latest release from [GitHub Releases](https://github.com/yibiaoai/yibiao-simple/releases), then run the installer or executable file.
+Download the latest release from [GitHub Releases](https://github.com/lhsl2026/OpenBidKit_Yibiao/releases), then run the installer or executable file.
 
 ### 🎬 Usage Demo
 

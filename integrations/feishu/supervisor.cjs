@@ -97,7 +97,7 @@ async function cleanupRecorded({ dataRoot, mainPath, supervisorPath, executable 
     fs.unlinkSync(pidFile); return { ok: true };
   } finally { await new Promise(resolve => lock.close(resolve)); }
 }
-function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs'), healthUrl, startupGraceMs = 90000, pollMs = 5000, restartDelayMs = 3000, probeTimeoutMs = 3000, stopGraceMs = 15000, stopChild = stopVerified }) {
+function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs'), healthUrl, startupGraceMs = 90000, pollMs = 5000, restartDelayMs = 3000, probeTimeoutMs = 3000, stopGraceMs = 15000, stopChild = stopVerified, inspectProcess = processIdentity }) {
   if (!Number.isFinite(startupGraceMs) || startupGraceMs < 70000) throw Error('startup_grace_too_short');
   for (const n of [pollMs, restartDelayMs, probeTimeoutMs, stopGraceMs]) if (!Number.isFinite(n) || n < 20) throw Error('supervisor_timing_invalid');
   const root = canonicalRoot(dataRoot), entry = fs.realpathSync.native(entryPath), supervisorPath = fs.realpathSync.native(process.argv[1]);
@@ -134,6 +134,17 @@ function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs
         if (stopping) throw error;
       }
     }
+  }
+  async function inspectSpawnedChild(pid) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { return await inspectProcess(pid); }
+      catch (error) {
+        if (attempt === 2) throw error;
+        event('child_identity_retry');
+        await pause(Math.min(restartDelayMs, 250));
+      }
+    }
+    return null;
   }
   async function monitor(child, exited) {
     const since = Date.now(); let healthy = false, failures = 0;
@@ -176,7 +187,7 @@ function createSupervisor({ dataRoot, entryPath = path.join(__dirname, 'main.cjs
         await new Promise(resolve => { child.once('spawn', resolve); child.once('error', resolve); });
         owner.childPid = child.pid ?? null; owner.childBirth = null; persist();
         let identity;
-        try { identity = child.pid ? await processIdentity(child.pid) : null; }
+        try { identity = child.pid ? await inspectSpawnedChild(child.pid) : null; }
         catch (error) { child.kill(); await exited; currentChild = null; throw error; }
         owner.childBirth = identity?.birth ?? null; persist(); event('child_started');
         const reason = identity ? await monitor(child, exited) : 'child_spawn_failed';

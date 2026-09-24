@@ -15,10 +15,10 @@ function createAppStorage(options,{runImpl=run}={}){
  }
  return {
   async upload({sourcePath,signal}){const data=await cli(['+file-upload','--file','./'+path.basename(sourcePath)],{cwd:path.dirname(sourcePath),signal});if(typeof data.path!=='string'||!data.path.startsWith('/'))throw Error('upload_receipt_invalid');return {remotePath:data.path};},
-  async sign({remotePath,signal}){const data=await cli(['+file-sign','--path',remotePath,'--expires-in','600'],{signal});return {url:data.signed_url};}
+  async sign({remotePath,signal}){const data=await cli(['+file-sign','--path',remotePath,'--expires-in','3600'],{signal});return {url:data.signed_url};}
  };
 }
-function createDocumentRecovery({store,config,provider,storage,attach,assertOwnership=()=>{},isSourceActive=()=>true,clock=Date.now}){
+function createDocumentRecovery({store,config,provider,storage,attach,reconcile,assertOwnership=()=>{},isSourceActive=()=>true,clock=Date.now}){
  const options=config.documentRecovery??{enabled:false};let running=false;
  if(options.enabled&&(!path.isAbsolute(options.cliPath??'')||!options.profile||options.appId!=='app_17agc8m97f2'||!config.chatId||!config.operatorIds?.length))throw Error('document_recovery_not_configured');
  const root=path.resolve(options.root??path.join(config.writingRoot??path.join(config.dataRoot,'writing'),'sources'));
@@ -75,6 +75,12 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
   const r=await fetch(base.origin+'/openapi/preread/tasks/'+encodeURIComponent(taskId)+'/manual-documents',{method:'POST',headers:{authorization:config.relayAuthorization,'content-type':'application/json'},body:JSON.stringify(body),redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(60000)]):AbortSignal.timeout(60000)});
   if(!r.ok)throw Error('manual_response_unknown');return r.json();
  }
+ async function getAttached({taskId,sha256,signal}){
+  if(!config.relayAuthorization?.startsWith('Bearer '))throw Error('manual_auth_missing');
+  const base=new URL(config.prereadUrl);
+  const r=await fetch(base.origin+'/openapi/preread/tasks/'+encodeURIComponent(taskId)+'/manual-documents/'+encodeURIComponent(sha256),{method:'GET',headers:{authorization:config.relayAuthorization},redirect:'error',signal:signal?AbortSignal.any([signal,AbortSignal.timeout(60000)]):AbortSignal.timeout(60000)});
+  if(!r.ok)throw Error('manual_reconciliation_unknown');return r.json();
+ }
  async function tick({signal}={}){
   if(!options.enabled||running||signal?.aborted)return;running=true;
   const own=()=>{assertOwnership();if(signal?.aborted)throw Error('document_recovery_stopped');};
@@ -83,7 +89,8 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
   try{
    own();const job=list().find(j=>!['attached','manual'].includes(j.stage)&&(!j.nextAt||j.nextAt<=clock()));if(!job)return;
    if(!active(job))return;
-   if(['uploading','attaching'].includes(job.stage)){manual(job,job.stage==='uploading'?'document_upload_unknown':'document_attach_unknown');return;}
+   if(job.stage==='uploading'){manual(job,'document_upload_unknown');return;}
+   if(job.stage==='attaching'){save({...job,stage:'reconciling',nextAt:clock(),error:'document_attach_unknown',updatedAt:clock()});return;}
    if(['download','downloading','monitoring'].includes(job.stage)){
     const wasMonitoring=job.stage==='monitoring';
     save({...job,stage:'downloading'});let result;
@@ -104,6 +111,16 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
     store.transaction(()=>{save(next);if(documentCategory==='tender_document')bind(next);});return;
    }
    let sourcePath;try{sourcePath=localFile(job);}catch{manual(job,'document_local_invalid');return;}
+   if(job.stage==='reconciling'){
+    const attempts=Number.isInteger(job.attempts)&&job.attempts>=0?job.attempts:0;let response;
+    try{response=await (reconcile??getAttached)({taskId:job.taskId,sha256:job.sha256,signal});}catch{own();response=null;}
+    if(!active(job))return;
+    if(response?.status==='attached'&&typeof response.documentId==='string'&&response.documentId){
+     const next={...job,stage:'attached',documentId:response.documentId,documentVersion:response.documentVersion,updatedAt:clock(),error:null};delete next.nextAt;store.transaction(()=>{save(next);bind(next);});return;
+    }
+    if(attempts>=34){manual(job,'document_attach_unknown');return;}
+    save({...job,stage:'reconciling',attempts:attempts+1,nextAt:clock()+60000,error:'document_attach_unknown',updatedAt:clock()});return;
+   }
    const client=storage??createAppStorage(options);
    if(job.stage==='downloaded'){
     save({...job,stage:'uploading',updatedAt:clock()});let result;
@@ -116,9 +133,9 @@ function createDocumentRecovery({store,config,provider,storage,attach,assertOwne
     let signed;try{signed=await client.sign({remotePath:job.remotePath,signal});}catch{own();save({...job,nextAt:clock()+60000,error:'document_sign_failed'});return;}
     if(!active(job))return;let url;try{url=new URL(signed.url);if(url.protocol!=='https:'||url.username||url.password)throw Error();}catch{manual(job,'document_sign_invalid');return;}
     save({...job,stage:'attaching',updatedAt:clock()});let response;
-    try{response=await (attach??post)({taskId:job.taskId,body:{chatId:config.chatId,manualActionId:job.actionId,actorId:config.operatorIds[0],candidate:{url:url.href,fileName:path.basename(sourcePath),officialCategory:job.documentCategory==='announcement_attachment'?'announcement_attachment':'tender_document'}},signal});}catch{own();manual(job,'document_attach_unknown');return;}
+    try{response=await (attach??post)({taskId:job.taskId,body:{chatId:config.chatId,manualActionId:job.actionId,actorId:config.operatorIds[0],candidate:{url:url.href,fileName:path.basename(sourcePath),officialCategory:job.documentCategory==='announcement_attachment'?'announcement_attachment':'tender_document'}},signal});}catch{own();save({...job,stage:'reconciling',nextAt:clock(),error:'document_attach_unknown',updatedAt:clock()});return;}
     if(!active(job))return;
-    const acquired=response?.acquisition;if(!['acquired','duplicate'].includes(acquired?.status)||typeof acquired.documentId!=='string'||!acquired.documentId){manual(job,'document_attach_unknown');return;}
+    const acquired=response?.acquisition;if(!['acquired','duplicate'].includes(acquired?.status)||typeof acquired.documentId!=='string'||!acquired.documentId){save({...job,stage:'reconciling',nextAt:clock(),error:'document_attach_unknown',updatedAt:clock()});return;}
     if(job.documentCategory==='announcement_attachment'){
      const next={...job,stage:'monitoring',partialSha256:job.sha256,partialDocumentId:acquired.documentId,partialDocumentVersion:acquired.documentVersion,nextAt:clock()+MONITOR_INTERVAL_MS,updatedAt:clock(),error:null};save(next);return;
     }

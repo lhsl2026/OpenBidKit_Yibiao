@@ -31,6 +31,36 @@ test('namespaced card actions normalize to the existing business contracts while
  for(const [input,route,want] of cases){const normalized=normalizeCardCallback(event(input),config);assert.equal(normalized.route,route);assert.deepEqual(normalized.value,want);}
  const legacy=normalizeCardCallback(event(value),config);assert.equal(legacy.route,'company_match');assert.deepEqual(legacy.value,value);
 });
+test('single card consumer forwards preread review callbacks as a sanitized raw envelope',()=>{
+ const actions=['confirm_preprocess_review','retry_decomposition_score_review','prepare_upload','cancel_upload'];
+ for(const action of actions){
+  const raw=event({action,runId:'11111111-1111-4111-8111-111111111111',documentVersion:3},{token:'private-token',card_content:'private-card'});
+  const normalized=normalizeCardCallback(raw,config);
+  assert.equal(normalized.route,'preread_callback');
+  assert.equal(normalized.value.action,action);
+  assert.deepEqual(normalized.value.raw,{type:'card.action.trigger',event_id:'event-1',operator_id:'ou_actor',chat_id:'oc_test',message_id:'om_card',host:'im_message',action_tag:'button',action_value:raw.action_value});
+  assert.equal(JSON.stringify(normalized).includes('private-token'),false);
+  assert.equal(JSON.stringify(normalized).includes('private-card'),false);
+ }
+ const namespaced=normalizeCardCallback(event({action:'preread.confirm_preprocess_review',runId:'11111111-1111-4111-8111-111111111111',documentVersion:3}),config);
+ assert.equal(namespaced.route,'preread_callback');assert.equal(namespaced.value.action,'confirm_preprocess_review');
+ const packageForm=event(undefined,{action_name:'submit_package_selection',action_value:'',form_value:JSON.stringify({selected_packages:['preread-package:marker']})});
+ const selected=normalizeCardCallback(packageForm,config);assert.equal(selected.route,'preread_callback');assert.equal(selected.value.action,'select_packages');
+ assert.equal(selected.value.raw.action_name,'submit_package_selection');assert.equal(selected.value.raw.form_value,packageForm.form_value);
+});
+test('company selection form and review callback preserve task run card and scope identity',()=>{
+ const marker='company-match:'+Buffer.from(JSON.stringify({projectId:'project',version:'v1',cardKey:'key',taskId:'task-1',runId:'11111111-1111-4111-8111-111111111111',documentVersion:3,companyId:'company-b',companyProfileVersion:'profile-b',scopeType:'group',scopeId:'oc_test',sourceCardMessageId:'om_card'})).toString('base64url');
+ const selected=normalizeCardCallback(event(undefined,{action_value:'',action_name:'company_match.select',form_value:JSON.stringify({selected_company:marker})}),config);
+ assert.equal(selected.route,'company_match');assert.equal(selected.value.action,'select');assert.equal(selected.value.companyId,'company-b');assert.equal(selected.value.companyProfileVersion,'profile-b');assert.equal(selected.value.sourceCardMessageId,'om_card');
+ const reviewValue={action:'company_match.review',projectId:'project',version:'v1',cardKey:'key',taskId:'task-1',runId:'11111111-1111-4111-8111-111111111111',documentVersion:3,companyId:'company-b',companyProfileVersion:'profile-b',scopeType:'group',scopeId:'oc_test',sourceCardMessageId:'om_card'};
+ const reviewed=normalizeCardCallback(event(reviewValue),config);assert.equal(reviewed.route,'company_match');assert.equal(reviewed.value.action,'review');assert.equal(reviewed.value.taskId,'task-1');
+ const memberReview=normalizeCardCallback(event(reviewValue,{operator_id:'ou_group_member'}),config);assert.equal(memberReview.route,'company_match');assert.equal(memberReview.event.actorId,'ou_group_member');
+ for(const bad of [
+  event(undefined,{action_value:'',action_name:'company_match.select',form_value:JSON.stringify({selected_company:'company-b'})}),
+  event({...reviewValue,scopeId:'oc_other'}),
+  event({...reviewValue,companyProfileVersion:''}),
+ ])assert.equal(normalizeCardCallback(bad,config),null);
+});
 test('ready marker gates stdout, arbitrary chunks assemble once, stderr/status never retain secrets',async t=>{
  const actions=[];const {s,children,calls}=source(t,{act:a=>actions.push(a)});const c=children[0];
  assert.equal(calls[0].exe,config.cardSource.cliPath);assert.equal(calls[0].opts.windowsHide,true);assert.deepEqual(calls[0].opts.stdio,['pipe','pipe','pipe']);

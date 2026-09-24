@@ -19,8 +19,11 @@ function loadConfig(env=process.env){
  const dataRoot=path.resolve(env.BID_DATA_ROOT||path.join(__dirname,'data'));
  const testDelivery={chatId:env.BID_CHAT_ID||'',allowedChats:list(env.BID_TEST_CHAT_IDS)};
  const production={cutover:env.BID_PRODUCTION_CUTOVER==='true',chatId:env.BID_PRODUCTION_CHAT_ID||'',allowedChats:list(env.BID_PRODUCTION_CHAT_IDS)};
+ const forbiddenChats=[...new Set(list(env.BID_FORBIDDEN_CHAT_IDS))];
  const activeDelivery=mode==='production'?production:testDelivery;
- const config={mode,host,apiKey,dataRoot,port:Number(env.BID_PORT||4381),companyId:env.BID_COMPANY_ID||'',chatId:activeDelivery.chatId,allowedChats:activeDelivery.allowedChats,testDelivery,production,operatorIds:list(env.BID_OPERATOR_IDS),sourceChats:list(env.BID_SOURCE_CHAT_IDS),sourceSenders:list(env.BID_SOURCE_SENDER_IDS),appId:env.LARK_APP_ID||'',appSecret:env.LARK_APP_SECRET||'',verificationToken:env.LARK_VERIFICATION_TOKEN||'',encryptKey:env.LARK_ENCRYPT_KEY||'',prereadUrl,prereadKey:env.PREREAD_HANDOFF_API_KEY||'',relayAuthorization:env.PREREAD_RELAY_AUTHORIZATION||'',databasePath:env.BID_VAULT_DATABASE||'',filesRoot:env.BID_VAULT_FILES||'',mappingsPath:env.BID_VAULT_MAPPINGS||'',rulesPath:env.BID_RULES_FILE||'',writingRoot:path.join(dataRoot,'writing'),electronPath:env.BID_ELECTRON_PATH||path.resolve(__dirname,'../../client/node_modules/electron/dist/electron.exe'),clientRoot:path.resolve(__dirname,'../../client'),modelConfig:{provider:env.MODEL_PROVIDER||'openai',base_url:configured(env.MODEL_PROVIDER_BASE_URL),api_key:configured(env.MODEL_PROVIDER_API_KEY),model_name:configured(env.MODEL_PROVIDER_MODEL)},summaryHour:Number(env.BID_SUMMARY_HOUR||18)};
+ const config={mode,host,apiKey,dataRoot,port:Number(env.BID_PORT||4381),companyId:env.BID_COMPANY_ID||'',chatId:activeDelivery.chatId,allowedChats:activeDelivery.allowedChats,testDelivery,production,forbiddenChats,operatorIds:list(env.BID_OPERATOR_IDS),sourceChats:list(env.BID_SOURCE_CHAT_IDS),sourceSenders:list(env.BID_SOURCE_SENDER_IDS),appId:env.LARK_APP_ID||'',appSecret:env.LARK_APP_SECRET||'',verificationToken:env.LARK_VERIFICATION_TOKEN||'',encryptKey:env.LARK_ENCRYPT_KEY||'',prereadUrl,prereadKey:env.PREREAD_HANDOFF_API_KEY||'',relayAuthorization:env.PREREAD_RELAY_AUTHORIZATION||'',databasePath:env.BID_VAULT_DATABASE||'',filesRoot:env.BID_VAULT_FILES||'',mappingsPath:env.BID_VAULT_MAPPINGS||'',rulesPath:env.BID_RULES_FILE||'',writingRoot:path.join(dataRoot,'writing'),electronPath:env.BID_ELECTRON_PATH||path.resolve(__dirname,'../../client/node_modules/electron/dist/electron.exe'),clientRoot:path.resolve(__dirname,'../../client'),modelConfig:{provider:env.MODEL_PROVIDER||'openai',base_url:configured(env.MODEL_PROVIDER_BASE_URL),api_key:configured(env.MODEL_PROVIDER_API_KEY),model_name:configured(env.MODEL_PROVIDER_MODEL)},summaryHour:Number(env.BID_SUMMARY_HOUR||18)};
+ const deliveryTargets=[config.chatId,testDelivery.chatId,...testDelivery.allowedChats,production.chatId,...production.allowedChats].filter(Boolean);
+ if(deliveryTargets.some(chat=>forbiddenChats.includes(chat)))throw Error('forbidden_chat_target');
  if(!Number.isInteger(config.port)||config.port<1||config.port>65535||!Number.isInteger(config.summaryHour)||config.summaryHour<0||config.summaryHour>23)throw Error('config_number_invalid');
  if(mode==='test'&&(!config.chatId||!config.allowedChats.includes(config.chatId)||!config.appId||!config.appSecret||!config.companyId))throw Error('test_delivery_not_configured');
  config.radarPolling={enabled:env.BID_RADAR_POLL_ENABLED==='true',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_LARK_CLI_PROFILE||'',startAt:env.BID_RADAR_START_AT||''};
@@ -28,6 +31,9 @@ function loadConfig(env=process.env){
  if(config.radarPolling.startAt&&!Number.isFinite(Date.parse(config.radarPolling.startAt)))throw Error('radar_start_invalid');
  config.cardSource={enabled:env.BID_CARD_SOURCE_ENABLED==='true',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_CARD_CLI_PROFILE||''};
  if(config.cardSource.enabled&&(!path.isAbsolute(config.cardSource.cliPath)||!config.cardSource.profile.trim()||!config.chatId||!config.operatorIds.length))throw Error('card_source_not_configured');
+ const prereadCardRelayScript=String(env.BID_PREREAD_CARD_RELAY_SCRIPT||'').trim();
+ config.prereadCardRelay={enabled:prereadCardRelayScript.length>0,scriptPath:prereadCardRelayScript};
+ if(config.prereadCardRelay.enabled&&(!config.cardSource.enabled||!path.isAbsolute(config.prereadCardRelay.scriptPath)||!config.cardSource.profile.trim()||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer ')))throw Error('preread_card_relay_not_configured');
  config.documentRecovery={enabled:env.BID_DOCUMENT_RECOVERY_ENABLED==='true',appId:env.BID_MIAODA_APP_ID||'',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_DOCUMENT_CLI_PROFILE||'',root:path.join(config.writingRoot,'sources')};
  const groupFileExtensions=list(env.BID_GROUP_FILE_ALLOWED_EXTENSIONS||'pdf,doc,docx').map(value=>value.toLowerCase());
  config.groupFileSource={enabled:env.BID_GROUP_FILE_SOURCE_ENABLED==='true',appId:env.BID_MIAODA_APP_ID||'',cliPath:env.BID_LARK_CLI_PATH||'',profile:env.BID_GROUP_FILE_CLI_PROFILE||'',startAt:env.BID_GROUP_FILE_START_AT||'',maxBytes:Number(env.BID_GROUP_FILE_MAX_BYTES||30*1024*1024),allowedExtensions:groupFileExtensions,root:path.join(dataRoot,'group-files')};
@@ -38,13 +44,14 @@ function loadConfig(env=process.env){
  if(config.reportArchive.enabled){const r=config.reportArchive;if(!['test','production'].includes(mode)||!path.isAbsolute(r.cliPath)||!r.profile.trim()||!['bot','user'].includes(r.identity)||!r.folderToken||!r.allowedFolderTokens.includes(r.folderToken)||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer '))throw Error('report_archive_not_configured');}
  if(config.documentRecovery.enabled&&(config.documentRecovery.appId!=='app_17agc8m97f2'||!path.isAbsolute(config.documentRecovery.cliPath)||!config.documentRecovery.profile.trim()||!config.chatId||!config.operatorIds.length||!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer ')))throw Error('document_recovery_not_configured');
  const backend=env.BID_MODEL_BACKEND||'api';if(!['api','codex'].includes(backend))throw Error('model_backend_invalid');
- config.codexBridge={enabled:backend==='codex',host:'127.0.0.1',port:Number(env.BID_CODEX_PORT||4383),apiKey:env.BID_CODEX_TOKEN||'',executable:resolveCodexExecutable(env.BID_CODEX_EXECUTABLE,env),model:env.BID_CODEX_MODEL||'gpt-6-astra',reasoningEffort:'low',root:path.join(dataRoot,'codex'),timeoutMs:Number(env.BID_CODEX_TIMEOUT_MS||240000),maxRequestBytes:1024*1024};
+ config.codexBridge={enabled:backend==='codex',host:'127.0.0.1',port:Number(env.BID_CODEX_PORT||4383),apiKey:env.BID_CODEX_TOKEN||'',executable:resolveCodexExecutable(env.BID_CODEX_EXECUTABLE,env),model:env.BID_CODEX_MODEL||'gpt-6-astra',reasoningEffort:'low',root:path.join(dataRoot,'codex'),timeoutMs:Number(env.BID_CODEX_TIMEOUT_MS||480000),maxRequestBytes:1024*1024};
  if(config.codexBridge.enabled){
   const c=config.codexBridge;
   c.models=[...new Set([...list(env.BID_CODEX_MODELS),c.model])];
   c.recommendedModel=env.BID_CODEX_RECOMMENDED_MODEL||c.model;
   if(c.models.some(model=>!/^[A-Za-z0-9._-]{1,128}$/.test(model))||!c.models.includes(c.recommendedModel))throw Error('codex_models_not_configured');
-  if(!path.isAbsolute(c.executable)||c.apiKey.length<32||!Number.isInteger(c.port)||c.port<1||c.port>65535||c.port===config.port||!Number.isInteger(c.timeoutMs)||c.timeoutMs<1000||c.timeoutMs>300000||!/^[A-Za-z0-9._-]{1,128}$/.test(c.model))throw Error('codex_bridge_not_configured');
+  c.requestTimeoutMs=c.timeoutMs+15000;
+  if(!path.isAbsolute(c.executable)||c.apiKey.length<32||!Number.isInteger(c.port)||c.port<1||c.port>65535||c.port===config.port||!Number.isInteger(c.timeoutMs)||c.timeoutMs<1000||c.timeoutMs>600000||!/^[A-Za-z0-9._-]{1,128}$/.test(c.model))throw Error('codex_bridge_not_configured');
   config.modelConfig={provider:'custom',backend:'codex',base_url:'http://127.0.0.1:'+c.port+'/v1',api_key:c.apiKey,model_name:c.model};
  }
  const overlap=production.chatId&&(
@@ -62,6 +69,7 @@ function loadConfig(env=process.env){
   if(!config.sourceChats.length||!config.sourceSenders.length||!config.radarPolling.enabled)missing.push('radar');
   if(!config.groupFileSource.enabled)missing.push('group_file_source');
   if(!config.cardSource.enabled)missing.push('card_callback');
+  if(!config.prereadCardRelay.enabled)missing.push('preread_card_relay');
   if(!config.reportArchive.enabled)missing.push('report_archive');
   if(!config.companyEvidence.enabled)missing.push('company_evidence');
   if(!config.prereadUrl||!config.relayAuthorization.startsWith('Bearer '))missing.push('preread');

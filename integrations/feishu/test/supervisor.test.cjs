@@ -25,11 +25,12 @@ http.createServer((req,res)=>{let bad=false;try{bad=fs.readFileSync(process.env.
   fs.writeFileSync(harness, `const api=require(${JSON.stringify(supervisorPath)});const fs=require('node:fs');
 const config=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 if(config.failFirstStop){let calls=0;config.stopChild=async(...args)=>{fs.appendFileSync(config.stopAttemptFile,String(++calls)+'\\n');if(calls===1)throw Error('simulated_stop_uncertain');return api.stopVerified(...args);};}
-delete config.failFirstStop;const supervisor=api.createSupervisor(config);
+if(config.failFirstInspect){let calls=0;config.inspectProcess=async pid=>{fs.appendFileSync(config.inspectAttemptFile,String(++calls)+'\\n');if(calls===1)throw Error('simulated_identity_unavailable');return api.processIdentity(pid);};}
+delete config.failFirstStop;delete config.failFirstInspect;const supervisor=api.createSupervisor(config);
 supervisor.start().catch(()=>process.exit(1));
 `);
-  const eventFile = path.join(root, 'events.jsonl'), badFile = path.join(root, 'bad-pid'), stopAttemptFile = path.join(root, 'stop-attempts');
-  const config = { dataRoot: path.join(root, 'data'), entryPath: childPath, healthUrl: 'http://127.0.0.1:' + port + '/health', startupGraceMs: 70000, pollMs: 80, restartDelayMs: 80, probeTimeoutMs: 500, stopGraceMs: 5000, stopAttemptFile, ...options };
+  const eventFile = path.join(root, 'events.jsonl'), badFile = path.join(root, 'bad-pid'), stopAttemptFile = path.join(root, 'stop-attempts'), inspectAttemptFile = path.join(root, 'inspect-attempts');
+  const config = { dataRoot: path.join(root, 'data'), entryPath: childPath, healthUrl: 'http://127.0.0.1:' + port + '/health', startupGraceMs: 70000, pollMs: 80, restartDelayMs: 80, probeTimeoutMs: 500, stopGraceMs: 5000, stopAttemptFile, inspectAttemptFile, ...options };
   const configPath = path.join(root, 'config.json'); fs.writeFileSync(configPath, JSON.stringify(config));
   const processes = [];
   function launch() {
@@ -55,7 +56,8 @@ supervisor.start().catch(()=>process.exit(1));
   });
   const events = () => { try { return fs.readFileSync(eventFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); } catch { return []; } };
   const stopAttempts = () => { try { return fs.readFileSync(stopAttemptFile, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
-  return { root, config, badFile, events, stopAttempts, launch, childPath: config.entryPath, harness };
+  const inspectAttempts = () => { try { return fs.readFileSync(inspectAttemptFile, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+  return { root, config, badFile, events, stopAttempts, inspectAttempts, launch, childPath: config.entryPath, harness };
 }
 
 test('unhealthy child exits before replacement; readiness 503 alone never causes restart', { timeout: 40000 }, async t => {
@@ -80,6 +82,18 @@ test('an uncertain health-restart stop is retried without exiting or overlapping
   assert.notEqual(second.pid, first.pid);
   const log = fs.readFileSync(path.join(f.config.dataRoot, 'logs/supervisor.jsonl'), 'utf8');
   assert.match(log, /"code":"child_stop_uncertain"/);
+});
+
+test('a transient spawned-child identity lookup is retried without exiting the supervisor', { timeout: 40000 }, async t => {
+  const f = await fixture(t, { failFirstInspect: true });
+  const p = f.launch();
+  const first = await waitFor(() => f.events()[0]);
+  await waitFor(() => f.inspectAttempts() >= 2);
+  assert.equal(first.overlap, false);
+  assert.equal(p.child.exitCode, null);
+  const { requestControl } = require(supervisorPath);
+  await requestControl(f.config.dataRoot, 'stop');
+  await p.exit;
 });
 
 test('a second supervisor for the same root exits without replacing or stopping the active child', { timeout: 40000 }, async t => {

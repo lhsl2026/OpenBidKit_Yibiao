@@ -30,7 +30,7 @@ function FullBidPage({ onSectionChange }: FullBidPageProps) {
 
   const load = useCallback(async () => {
     if (!window.yibiao?.fullBid) {
-      setLoadError('完整标书桌面服务未就绪，请在易标桌面客户端打开。');
+      setLoadError('完整标书桌面服务未就绪，请在联智标桌面客户端打开。');
       return;
     }
     try {

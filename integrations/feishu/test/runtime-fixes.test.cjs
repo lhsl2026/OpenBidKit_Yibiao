@@ -22,6 +22,42 @@ test('writing gate allows evidence placeholders but blocks unsafe review states'
  assert.equal(canWrite({...project,assessment:{decision:'review',items:[{requirementId:'q',status:'review',reasons:['requirement_confidence_invalid']}],blockers:['q:requirement_confidence_invalid']}},Date.parse('2026-09-17T00:00:00Z')),false);
  assert.equal(canWrite({...project,assessment:{decision:'review',items:[],blockers:['vault_unavailable']}},Date.parse('2026-09-17T00:00:00Z')),false);
 });
+test('a followed project with a preread-recoverable source and only visual-review warnings can generate a reviewed placeholder draft without a deadline',()=>{
+ const checksum='a'.repeat(64);
+ const project={
+  taskId:'task-review',version:'7',checksum,current:true,humanDecision:'follow',
+  input:{deadline:'',handoff:{
+   status:'invalid',superseded:false,latestDocumentVersion:'7',
+   task:{taskId:'task-review',title:'稀疏页复核项目'},
+   snapshot:{documentVersion:'7',reportId:'report-review',reportVersion:'r3',checksum,generatedAt:'2026-09-21T01:00:00Z',completeness:0.8,confidence:0.92},
+   warnings:[
+    {code:'report_requires_review',blocked:true},
+    {code:'five_module_run_incomplete',blocked:true},
+   ],
+  }},
+  assessment:{decision:'review',items:[],blockers:['handoff_snapshot_incomplete','handoff_invalid','handoff_warning_blocked','deadline_invalid']},
+ };
+ assert.equal(canWrite(project,Date.parse('2026-09-21T02:00:00Z')),true);
+});
+test('the visual-review exception still blocks identity mismatches, explicit failures, expired deadlines and unknown warnings',()=>{
+ const checksum='a'.repeat(64);
+ const project={
+  taskId:'task-review',version:'7',checksum,current:true,humanDecision:'follow',
+  input:{deadline:'',handoff:{
+   status:'invalid',superseded:false,latestDocumentVersion:'7',
+   task:{taskId:'task-review',title:'稀疏页复核项目'},
+   snapshot:{documentVersion:'7',reportId:'report-review',reportVersion:'r3',checksum,generatedAt:'2026-09-21T01:00:00Z',completeness:0.8,confidence:0.92},
+   warnings:[{code:'report_requires_review',blocked:true},{code:'five_module_run_incomplete',blocked:true}],
+  }},
+  assessment:{decision:'review',items:[],blockers:['handoff_snapshot_incomplete','handoff_invalid','handoff_warning_blocked','deadline_invalid']},
+ };
+ const identityMismatch=structuredClone(project);identityMismatch.checksum='b'.repeat(64);
+ const explicitFailure=structuredClone(project);explicitFailure.assessment={decision:'review',items:[{requirementId:'q',status:'not_satisfied',reasons:['manual_result_not_satisfied']}],blockers:['q:manual_result_not_satisfied']};
+ const expired=structuredClone(project);expired.input.deadline='2026-09-20T09:00:00+08:00';
+ const missingDocument=structuredClone(project);missingDocument.input.handoff.warnings=[{code:'complete_tender_document_missing',blocked:true}];
+ const unknownWarning=structuredClone(project);unknownWarning.input.handoff.warnings.push({code:'unexpected_review_failure',blocked:true});
+ for(const unsafe of [identityMismatch,explicitFailure,expired,missingDocument,unknownWarning])assert.equal(canWrite(unsafe,Date.parse('2026-09-21T02:00:00Z')),false);
+});
 test('a fenced live process fails health so the supervisor can restart it',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'bid-health-'));
   const config={...loadConfig({}),dataRoot:root,port:0,companyId:'c'};
@@ -79,6 +115,21 @@ test('a source-required writing job recovers the verified preread document and r
   assert.equal(f.store.getProject(f.p.id).humanDecision, 'follow');
 });
 
+test('a queued verified group file is staged into writing sources before the worker starts', async t => {
+  const f = fixture(t); f.enqueue(); const job = f.store.listWriting()[0];
+  const outsidePath = path.join(f.root, 'group-files', 'objects', 'source.pdf');
+  const stagedPath = path.join(f.root, 'sources', 'staged.pdf');
+  f.store.resumeWriting(job, { ...job.payload, sourcePath: outsidePath, sourceChecksum: 'a'.repeat(64) }, Date.now(), 'prepare');
+  let staged = 0, runs = 0;
+  const r = f.runner({
+    stageSource: input => { staged++; assert.equal(input.sourcePath, outsidePath); return { sourcePath: stagedPath, sha256: 'a'.repeat(64) }; },
+    write: async current => { runs++; assert.equal(current.sourcePath, stagedPath); return { status: 'waiting_confirmation', confirmation: { type: 'outline', challenge: 'outline-ready', sections: [] } }; },
+  });
+  await r.tick(); await new Promise(setImmediate);
+  assert.equal(staged, 1);assert.equal(runs, 1);
+  assert.equal(f.store.listWriting()[0].payload.sourcePath, stagedPath);
+});
+
 test('a draft affected by the empty outline-selection bug resumes once without another employee action', async t => {
   const f = fixture(t); f.enqueue(); const failed = f.store.listWriting()[0];
   failed.payload.confirmations = {
@@ -98,6 +149,46 @@ test('a draft affected by the empty outline-selection bug resumes once without a
   assert.equal(resumed.status, 'waiting_confirmation');
   assert.deepEqual(f.store.get('legacyOutlineRecovery:' + failed.id), { completed: true });
   assert.equal(f.store.getProject(f.p.id).humanDecision, 'follow');
+});
+
+test('a content worker timeout with durable progress automatically continues through export', async t => {
+  const f = fixture(t); f.enqueue(); const job = f.store.listWriting()[0];
+  f.store.resumeWriting(job, job.payload, Date.now(), 'content');
+  let runs = 0;
+  const r = f.runner({ write: async current => {
+    runs++;
+    if (runs === 1) {
+      assert.equal(current.stage, 'content');
+      return { status: 'interrupted', stage: 'content', code: 'worker_timeout', checkpointProgressed: true };
+    }
+    if (runs === 2) return { status: 'completed', stage: 'content', nextStage: 'export' };
+    assert.equal(current.stage, 'export');
+    return { status: 'completed', stage: 'export', artifacts: [] };
+  } });
+
+  await r.tick(); await new Promise(setImmediate);
+  assert.equal(f.store.listWriting()[0].status, 'queued');
+  assert.equal(f.store.listWriting()[0].stage, 'content');
+  await r.tick(); await new Promise(setImmediate);
+  assert.equal(f.store.listWriting()[0].status, 'queued');
+  assert.equal(f.store.listWriting()[0].stage, 'export');
+  await r.tick(); await new Promise(setImmediate);
+  assert.equal(runs, 3);
+  assert.equal(f.store.listWriting()[0].status, 'completed');
+});
+
+test('a content worker timeout without durable progress stops for manual review', async t => {
+  const f = fixture(t); f.enqueue(); const job = f.store.listWriting()[0];
+  f.store.resumeWriting(job, job.payload, Date.now(), 'content');
+  let runs = 0;
+  const r = f.runner({ write: async () => {
+    runs++;
+    return { status: 'interrupted', stage: 'content', code: 'worker_timeout', checkpointProgressed: false };
+  } });
+
+  await r.tick(); await new Promise(setImmediate);
+  assert.equal(runs, 1);
+  assert.equal(f.store.listWriting()[0].status, 'interrupted');
 });
 
 test('evidence revoked during worker execution discards its returned artifacts', async t => {

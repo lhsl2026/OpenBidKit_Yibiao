@@ -18,6 +18,10 @@ function createStore(file) {
     CREATE TABLE IF NOT EXISTS file_outbox(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,file_key TEXT,message_id TEXT,first_attempt INTEGER,attempts INTEGER NOT NULL DEFAULT 0,next_at INTEGER NOT NULL DEFAULT 0,delivered INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS leases(name TEXT PRIMARY KEY,owner TEXT NOT NULL,expires INTEGER NOT NULL);`);
   db.exec(`CREATE TABLE IF NOT EXISTS card_streams(id TEXT PRIMARY KEY,task TEXT NOT NULL,company TEXT NOT NULL,chat TEXT NOT NULL,create_id TEXT NOT NULL,message_id TEXT,first_attempt INTEGER);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS card_rebindings(
+    id TEXT PRIMARY KEY,source_job_id TEXT NOT NULL,project_id TEXT NOT NULL,chat TEXT NOT NULL,old_message_id TEXT NOT NULL,
+    create_id TEXT NOT NULL,new_message_id TEXT,first_attempt INTEGER,delivered INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL,completed INTEGER,
+    UNIQUE(source_job_id,project_id,chat));`);
   db.exec(`CREATE TABLE IF NOT EXISTS group_file_jobs(
     id TEXT PRIMARY KEY,company_id TEXT NOT NULL,chat_id TEXT NOT NULL,source_message_id TEXT NOT NULL,sender_id TEXT NOT NULL,create_time TEXT NOT NULL,
     file_name TEXT NOT NULL,file_key TEXT NOT NULL,reply_to TEXT,stage TEXT NOT NULL,file_size INTEGER,sha256 TEXT,source_path TEXT,remote_path TEXT,
@@ -49,12 +53,32 @@ function createStore(file) {
       db.prepare('INSERT OR IGNORE INTO card_streams VALUES(?,?,?,?,?,?,?)').run(id,p.taskId,p.companyId,chat,old?.id??key('card-create',p.taskId,p.companyId,chat),p.messageId??null,old?.first_attempt??null);
       return db.prepare('SELECT * FROM card_streams WHERE id=?').get(id);
     },
+    getCardStream(taskId,companyId,chatId){return db.prepare('SELECT * FROM card_streams WHERE task=? AND company=? AND chat=?').get(taskId,companyId,chatId)??null;},
     attemptStream(id,now){db.prepare('UPDATE card_streams SET first_attempt=COALESCE(first_attempt,?) WHERE id=?').run(now,id);},
     bindStream(id,messageId){
       const stream=db.prepare('SELECT * FROM card_streams WHERE id=?').get(id);
       db.prepare('UPDATE card_streams SET message_id=? WHERE id=?').run(messageId,id);
       db.prepare('UPDATE projects SET message_id=? WHERE task=? AND company=?').run(messageId,stream.task,stream.company);
     },
+    scheduleCardRebind({sourceJobId,projectId,chatId,now}){
+      const p=getProject(projectId);if(!p?.current||!p.messageId||!sourceJobId||!chatId)return null;
+      const id=key('card-rebind',sourceJobId,projectId,chatId),createId=key('card-rebind-create',sourceJobId,projectId,chatId);
+      const result=db.prepare('INSERT OR IGNORE INTO card_rebindings(id,source_job_id,project_id,chat,old_message_id,create_id,created) VALUES(?,?,?,?,?,?,?)').run(id,sourceJobId,projectId,chatId,p.messageId,createId,now);
+      if(result.changes){db.prepare('UPDATE outbox SET delivered=1 WHERE project_id=? AND delivered=0').run(projectId);db.prepare('UPDATE projects SET revision=revision+1,updated=? WHERE id=?').run(now,projectId);enqueue(getProject(projectId));}
+      return db.prepare('SELECT * FROM card_rebindings WHERE id=?').get(id)??null;
+    },
+    getPendingCardRebind(projectId,chatId){return db.prepare('SELECT * FROM card_rebindings WHERE project_id=? AND chat=? AND delivered=0 ORDER BY created LIMIT 1').get(projectId,chatId)??null;},
+    attemptCardRebind(id,now){db.prepare('UPDATE card_rebindings SET first_attempt=COALESCE(first_attempt,?) WHERE id=?').run(now,id);},
+    activateCardRebind(id,messageId){
+      const row=db.prepare('SELECT * FROM card_rebindings WHERE id=? AND delivered=0').get(id);if(!row)throw Error('card_rebind_missing');
+      const p=getProject(row.project_id);if(!p?.current)throw Error('card_rebind_project_stale');
+      const stream=this.messageStream(p,row.chat);
+      db.prepare('UPDATE card_rebindings SET new_message_id=? WHERE id=?').run(messageId,id);
+      db.prepare('UPDATE card_streams SET create_id=?,message_id=?,first_attempt=COALESCE(first_attempt,?) WHERE id=?').run(row.create_id,messageId,row.first_attempt,stream.id);
+      db.prepare('UPDATE projects SET message_id=? WHERE task=? AND company=?').run(messageId,p.taskId,p.companyId);
+    },
+    finishCardRebind(id,now){db.prepare('UPDATE card_rebindings SET delivered=1,completed=? WHERE id=?').run(now,id);},
+    manualCardRebind(id,now){db.prepare('UPDATE card_rebindings SET delivered=-1,completed=? WHERE id=?').run(now,id);},
     getAction(id){const row=db.prepare('SELECT * FROM actions WHERE event_id=?').get(id);return row?{hash:row.payload_hash,result:JSON.parse(row.result)}:null;},
     saveAction(id,hash,result,now){db.prepare('INSERT INTO actions VALUES(?,?,?,?)').run(id,hash,JSON.stringify(result),now);},
     enqueueWriting(p,now){const id=key('write',p.id);db.prepare("INSERT INTO writing_jobs VALUES(?,?,'prepare','queued',?,NULL,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,stage='prepare',status='queued',result=NULL,updated=excluded.updated WHERE writing_jobs.status='cancelled'").run(id,p.id,JSON.stringify({...p.input,id,projectId:p.id,confirmed:true,deliveryEpoch:key('generation',id,p.revision)}),now);return id;},
@@ -68,6 +92,7 @@ function createStore(file) {
     sent(id){db.prepare('UPDATE outbox SET delivered=1 WHERE id=?').run(id);},
     retry(row,now,error='delivery_failed'){const delay=Math.min(3600000,5000*2**Math.min(row.attempts,10));db.prepare('UPDATE outbox SET attempts=attempts+1,next_at=?,last_error=? WHERE id=?').run(now+delay,error,row.id);},
     manualDelivery(id){db.prepare("UPDATE outbox SET delivered=-1,last_error='delivery_uncertain' WHERE id=?").run(id);},
+    rejectDelivery(id,error='delivery_target_rejected'){db.prepare('UPDATE outbox SET delivered=-1,last_error=? WHERE id=?').run(error,id);},
     watch(taskId,input){db.prepare('INSERT INTO watches(task_id,payload) VALUES(?,?) ON CONFLICT(task_id) DO UPDATE SET payload=excluded.payload,next_at=0').run(taskId,JSON.stringify(input));},
     getWatch(taskId){const r=db.prepare('SELECT * FROM watches WHERE task_id=?').get(taskId);return r?{...r,payload:JSON.parse(r.payload)}:null;},
     listWatches(now){return db.prepare('SELECT * FROM watches WHERE next_at<=? ORDER BY next_at LIMIT 20').all(now).map(r=>({...r,payload:JSON.parse(r.payload)}));},

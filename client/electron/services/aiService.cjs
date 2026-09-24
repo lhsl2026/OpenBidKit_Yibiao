@@ -23,6 +23,10 @@ const {
 } = require('../utils/aiLog.cjs');
 const textTokenStatsStore = require('./textTokenStatsStore.cjs');
 const { normalizeTokenUsage } = textTokenStatsStore;
+const {
+  adaptCodexBridgeAgentResponse,
+  createCodexBridgeAgentAdapter,
+} = require('./agent/agentCodexBridgeAdapter.cjs');
 
 const AI_REQUEST_TIMEOUT_MS = 600000;
 
@@ -811,9 +815,13 @@ async function fetchChatCompletion(app, config, body, options = {}) {
   const timer = controller ? setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS) : null;
   const baseUrl = requireBaseUrl(config.base_url, '请先在设置中配置文本模型 Base URL');
   try {
+    const headers = createHeaders(config.api_key);
+    if (options.retryAttempt) {
+      headers['X-Yibiao-Request-Attempt'] = options.retryAttempt;
+    }
     return await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
-      headers: createHeaders(config.api_key),
+      headers,
       body: JSON.stringify(body),
       signal: options.signal || controller.signal,
     });
@@ -831,10 +839,14 @@ async function ensureTextAiResponseOk(response, fallbackMessage) {
     return;
   }
 
-  throw await createAiHttpErrorFromResponse(response, fallbackMessage, {
+  const error = await createAiHttpErrorFromResponse(response, fallbackMessage, {
     source: 'text-model',
     responseFormatUnsupportedChecker: isResponseFormatUnsupported,
   });
+  if (response.status === 409 && error.aiHttpErrorDetail === 'execution_failed') {
+    markAiRequestError(error, { retryable: true });
+  }
+  throw error;
 }
 
 function appendStreamChoiceContent(choice, contentParts) {
@@ -974,7 +986,10 @@ async function readOpenAIChatStream(response) {
 }
 
 async function requestTextAiNormal(app, config, requestBody, options = {}) {
-  const response = await fetchChatCompletion(app, config, requestBody, { signal: options.signal });
+  const response = await fetchChatCompletion(app, config, requestBody, {
+    signal: options.signal,
+    retryAttempt: options.retryAttempt,
+  });
   await ensureTextAiResponseOk(response, 'AI 请求失败');
   let responseData = null;
   try {
@@ -990,7 +1005,10 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
 }
 
 async function requestTextAiStream(app, config, requestBody, options = {}) {
-  const response = await fetchChatCompletion(app, config, requestBody, { signal: options.signal });
+  const response = await fetchChatCompletion(app, config, requestBody, {
+    signal: options.signal,
+    retryAttempt: options.retryAttempt,
+  });
   await ensureTextAiResponseOk(response, 'AI 请求失败');
   return readOpenAIChatStream(response);
 }
@@ -1260,16 +1278,17 @@ async function chatWithConfig(app, config, request) {
       created_at: new Date().toISOString(),
     });
     let result = null;
-    result = await runWithAiRetry(() => runWithOperationTimeout(async (signal) => {
+    result = await runWithAiRetry(({ attempt }) => runWithOperationTimeout(async (signal) => {
+      const retryAttempt = attempt > 1 ? `${requestId}:${attempt}` : undefined;
       try {
-        return await requestTextAi(app, config, requestBody, { signal, requestMode });
+        return await requestTextAi(app, config, requestBody, { signal, requestMode, retryAttempt });
       } catch (error) {
         if (!request.response_format || !error.responseFormatUnsupported) {
           throw error;
         }
 
         requestBody = createChatRequestBody(config, request, { omitResponseFormat: true, stream: requestMode === 'stream' });
-        return requestTextAi(app, config, requestBody, { signal, requestMode });
+        return requestTextAi(app, config, requestBody, { signal, requestMode, retryAttempt });
       }
     }, timeoutMs, request.signal));
 
@@ -1337,7 +1356,9 @@ async function runAgentChatCompletionWithConfig(app, config, request) {
   }
 
   const requestId = createRequestId();
-  const requestBody = createAgentChatRequestBody(config, request.body);
+  const nativeRequestBody = createAgentChatRequestBody(config, request.body);
+  const codexBridgeAdapter = createCodexBridgeAgentAdapter(config, nativeRequestBody);
+  const requestBody = codexBridgeAdapter?.requestBody || nativeRequestBody;
   const requestMode = requestBody.stream ? 'stream' : 'normal';
   const logTitle = resolveAiLogTitle(request, 'Pi Agent');
   let responseData = null;
@@ -1355,7 +1376,8 @@ async function runAgentChatCompletionWithConfig(app, config, request) {
       created_at: new Date().toISOString(),
     });
     await Promise.resolve(request.onRequestStart?.({ config, requestBody, requestId }));
-    const response = await fetchChatCompletion(app, config, requestBody, { signal: request.signal });
+    const upstreamResponse = await fetchChatCompletion(app, config, requestBody, { signal: request.signal });
+    const response = await adaptCodexBridgeAgentResponse(upstreamResponse, codexBridgeAdapter);
     await ensureTextAiResponseOk(response, 'AI 请求失败');
     const result = await request.consumeResponse(response, {
       config,
@@ -1418,7 +1440,7 @@ async function testOpenAICompatibleImageModel(app, config, provider) {
   const logTitle = `AI生图测试-${meta.label}`;
   const requestBody = {
     model: imageConfig.model_name,
-    prompt: '大字报，内容是“易标AI老好了”',
+    prompt: '大字报，内容是“联智标AI老好了”',
     size: normalizeOpenAICompatibleImageSize(imageConfig),
     response_format: 'url',
     ...(requestMode === 'stream' ? { stream: true } : {}),
@@ -1530,7 +1552,7 @@ async function testGoogleImageModel(app, config) {
   const requestMode = normalizeImageRequestMode(imageConfig);
   const requestId = createRequestId();
   const logTitle = 'AI生图测试-Google AI Studio';
-  const requestBody = createGoogleImageRequestBody('大字报，内容是“易标AI老好了”', normalizeGoogleImageSize(imageConfig));
+  const requestBody = createGoogleImageRequestBody('大字报，内容是“联智标AI老好了”', normalizeGoogleImageSize(imageConfig));
   const url = createGoogleImageUrl(baseUrl, imageConfig.model_name, requestMode);
   let responseData = null;
 
@@ -2229,7 +2251,7 @@ async function generateComfyUIImage(app, config, request) {
 async function testComfyUIImageModel(app, config) {
   const testRequest = {
     title: '测试',
-    prompt: '大字报，内容是"易标AI老好了"',
+    prompt: '大字报，内容是"联智标AI老好了"',
   };
   const { image, workflow_source: workflowSource } = await runComfyUIImageGeneration(app, config, testRequest, {
     returnRawImage: true,
@@ -2300,10 +2322,12 @@ function createAiService({ app, configStore }) {
   }
 
   function enqueueTextRequest(request, runner, options = {}) {
-    return textRequestQueue.enqueue(runner, {
+    const config = getTextConfig(request);
+    return textRequestQueue.enqueue(() => runner(config), {
       scopeId: getQueueScopeId(request),
       signal: options.signal,
       maxAttempts: options.maxAttempts,
+      limit: config.concurrency_limit,
     });
   }
 
@@ -2336,17 +2360,11 @@ function createAiService({ app, configStore }) {
     },
 
     async chat(request) {
-      return enqueueTextRequest(request, () => {
-        const config = getTextConfig(request);
-        return chatWithConfig(app, config, request);
-      }, { signal: request?.signal });
+      return enqueueTextRequest(request, config => chatWithConfig(app, config, request), { signal: request?.signal });
     },
 
     async runAgentChatCompletion(request) {
-      return enqueueTextRequest(request, () => {
-        const config = getTextConfig(request);
-        return runAgentChatCompletionWithConfig(app, config, request);
-      }, {
+      return enqueueTextRequest(request, config => runAgentChatCompletionWithConfig(app, config, request), {
         signal: request?.signal,
         // Pi Session 保留回合级原生重试，本队列只负责统一调度和并发控制。
         maxAttempts: 1,
@@ -2354,24 +2372,15 @@ function createAiService({ app, configStore }) {
     },
 
     async requestJson(request) {
-      return enqueueTextRequest(request, () => {
-        const config = getTextConfig(request);
-        return collectJsonResponseWithConfig(app, config, request);
-      }, { signal: request?.signal });
+      return enqueueTextRequest(request, config => collectJsonResponseWithConfig(app, config, request), { signal: request?.signal });
     },
 
     async collectJsonResponse(request) {
-      return enqueueTextRequest(request, () => {
-        const config = getTextConfig(request);
-        return collectJsonResponseWithConfig(app, config, request);
-      }, { signal: request?.signal });
+      return enqueueTextRequest(request, config => collectJsonResponseWithConfig(app, config, request), { signal: request?.signal });
     },
 
     async parseJsonResponseContent(request, content) {
-      return enqueueTextRequest(request, () => {
-        const config = getTextConfig(request);
-        return parseOrRepairJsonResponseWithConfig(app, config, request, content);
-      }, { signal: request?.signal });
+      return enqueueTextRequest(request, config => parseOrRepairJsonResponseWithConfig(app, config, request, content), { signal: request?.signal });
     },
 
     pauseQueueScope(scopeId) {

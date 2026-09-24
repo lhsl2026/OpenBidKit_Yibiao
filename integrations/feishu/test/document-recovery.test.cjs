@@ -34,8 +34,12 @@ test('one phase per tick preserves checksum source and attaches once without per
 test('uncertain upload or restart during uploading never retries the remote write',async t=>{
  const {recovery,make,calls}=setup(t,{storage:{upload:async()=>{calls.upload++;throw Error('ambiguous secret');},sign:async()=>assert.fail()}});recovery.queueReceipt(receipt);await recovery.tick();await recovery.tick();await make().tick();assert.equal(calls.upload,1);assert.equal(recovery.list()[0].stage,'manual');assert.equal(recovery.list()[0].error,'document_upload_unknown');
 });
-test('unknown attachment response retains the verified local original and never repeats POST',async t=>{
- const {recovery,calls,make,store}=setup(t,{attach:async()=>{calls.attach++;throw Error('500 after action resolved');}});recovery.queueReceipt(receipt);await recovery.tick();await recovery.tick();await recovery.tick();await make().tick();assert.equal(calls.attach,1);assert.equal(recovery.list()[0].error,'document_attach_unknown');assert.equal(store.get('document-source:'+taskId).sha256,sha256);
+test('unknown attachment response reconciles by checksum and never repeats POST',async t=>{
+ let reconcileCalls=0;
+ const {recovery,calls,make,store}=setup(t,{attach:async()=>{calls.attach++;throw Error('500 after action resolved');},reconcile:async input=>{reconcileCalls++;assert.equal(input.taskId,taskId);assert.equal(input.sha256,sha256);return {status:'attached',documentId:'reconciled-document',documentVersion:1,parseStatus:'parsing'};}});
+ recovery.queueReceipt(receipt);await recovery.tick();await recovery.tick();await recovery.tick();
+ assert.equal(calls.attach,1);assert.equal(recovery.list()[0].stage,'reconciling');assert.equal(recovery.list()[0].error,'document_attach_unknown');
+ await make().tick();assert.equal(calls.attach,1);assert.equal(reconcileCalls,1);assert.equal(recovery.list()[0].stage,'attached');assert.equal(recovery.list()[0].documentId,'reconciled-document');assert.equal(store.get('document-source:'+taskId).sha256,sha256);
 });
 test('source checksum failure and source edits block uploads without leaking provider errors',async t=>{
  let active=true;const {recovery,calls,root}=setup(t,{isSourceActive:()=>active});recovery.queueReceipt(receipt);await recovery.tick();active=false;await recovery.tick();assert.equal(calls.upload,0);assert.equal(recovery.list()[0].error,'document_source_edited');
@@ -55,7 +59,7 @@ test('local file tampering blocks before upload and aborted ticks do not perform
 test('Miaoda adapter honors observed success envelope, user profile, relative local path and absolute CLI',async()=>{
  const calls=[],options={cliPath:'C:/fixed/lark-cli.exe',appId:'app_17agc8m97f2',profile:'authorized-user'};
  const storage=createAppStorage(options,{runImpl:async(exe,args,opts)=>{calls.push({exe,args,opts});return {stdout:JSON.stringify({ok:true,data:args.includes('+file-upload')?{path:'/remote.pdf',download_url:'ignored'}:{signed_url:'https://files.example/x?signature=private',expires_at:'later'}})};}});
- assert.deepEqual(await storage.upload({sourcePath:'C:/local documents/file.pdf'}),{remotePath:'/remote.pdf'});assert.deepEqual(await storage.sign({remotePath:'/remote.pdf'}),{url:'https://files.example/x?signature=private'});
+ assert.deepEqual(await storage.upload({sourcePath:'C:/local documents/file.pdf'}),{remotePath:'/remote.pdf'});assert.deepEqual(await storage.sign({remotePath:'/remote.pdf'}),{url:'https://files.example/x?signature=private'});const signArgs=calls.find(call=>call.args.includes('+file-sign')).args;assert.equal(signArgs[signArgs.indexOf('--expires-in')+1],'3600');
  assert.equal(calls[0].exe,options.cliPath);assert.equal(calls[0].args[calls[0].args.indexOf('--file')+1],'./file.pdf');assert.equal(calls[0].args[calls[0].args.indexOf('--as')+1],'user');assert.equal(calls[0].args[calls[0].args.indexOf('--profile')+1],options.profile);assert.equal(calls[0].opts.windowsHide,true);
 });
 test('oversized local originals are rejected by stat before any byte read, including existing download destinations',async t=>{

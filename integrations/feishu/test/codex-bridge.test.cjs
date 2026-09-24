@@ -6,6 +6,7 @@ const { createCodexBridge } = require('../codex-bridge.cjs');
 
 const apiKey = 'bridge-test-key-'.repeat(3);
 const payload = (text = 'Hello', extra = {}) => ({ model: 'gpt-6-astra', messages: [{ role: 'user', content: text }], ...extra });
+const retryOptions = attempt => ({ headers: { authorization: 'Bearer ' + apiKey, 'content-type': 'application/json', 'x-yibiao-request-attempt': attempt } });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const until = async predicate => { for (let i = 0; i < 100 && !predicate(); i++) await new Promise(r => setTimeout(r, 5)); assert.ok(predicate()); };
 async function fixture(t, options = {}) {
@@ -83,12 +84,14 @@ test('JSON and SSE share one cached completion and one request id', async t => {
   assert.equal(f.calls(), 1);
 });
 
-test('json_object rejects nonobjects and keeps failure durable without another execution', async t => {
-  const f = await fixture(t, { run: async () => '[1,2]' });
+test('json_object rejects a nonobject but a declared later attempt executes again', async t => {
+  let attempts = 0;
+  const f = await fixture(t, { run: async () => ++attempts === 1 ? '[1,2]' : '{"ok":true}' });
   const body = payload('json', { response_format: { type: 'json_object' } });
   assert.equal((await f.post(body)).status, 502);
-  const again = await f.post(body); assert.equal(again.status, 409);
-  assert.equal((await again.json()).error.code, 'execution_failed'); assert.equal(f.calls(), 1);
+  const again = await f.post(body, retryOptions('json-attempt-2')); assert.equal(again.status, 200);
+  assert.equal((await again.json()).choices[0].message.content, '{"ok":true}');
+  assert.equal(f.calls(), 2);
 });
 
 test('same in-flight payload reuses one promise and distinct requests run serially with four waiting slots', async t => {
@@ -121,18 +124,34 @@ test('persistent running marker after restart blocks uncertain repeat; completed
   assert.equal((await restarted.post(payload())).status, 200); assert.equal(restarted.calls(), 1);
 });
 
-test('timeout and server close abort execution; timeout never automatically repeats', async t => {
+test('timeout and server close abort execution; a declared repeat starts a fresh execution', async t => {
   let aborted = 0;
   const f = await fixture(t, { config: { timeoutMs: 35 }, run: ({ signal }) => new Promise((resolve, reject) => { signal.addEventListener('abort', () => { aborted++; reject(Error('private detail')); }, { once: true }); }) });
   const timed = await f.post(payload('timeout')); assert.equal(timed.status, 504);
-  assert.equal((await f.post(payload('timeout'))).status, 409); assert.equal(aborted, 1);
-  const pending = f.post(payload('close')).catch(() => null); await until(() => f.calls() === 2);
-  await f.bridge.close(); await pending; assert.equal(aborted, 2);
+  assert.equal((await f.post(payload('timeout'), retryOptions('timeout-attempt-2'))).status, 504); assert.equal(aborted, 2);
+  const pending = f.post(payload('close')).catch(() => null); await until(() => f.calls() === 3);
+  await f.bridge.close(); await pending; assert.equal(aborted, 3);
+});
+
+test('queued jobs receive their full execution window after they become active', { timeout: 2_000 }, async t => {
+  const f = await fixture(t, {
+    config: { timeoutMs: 80, requestTimeoutMs: 95 },
+    run: async () => { await new Promise(resolve => setTimeout(resolve, 55)); return 'completed'; },
+  });
+  const first = f.post(payload('first'));
+  await until(() => f.calls() === 1);
+  const second = f.post(payload('second'));
+  assert.equal((await first).status, 200);
+  assert.equal((await second).status, 200);
+  assert.equal(f.calls(), 2);
 });
 
 test('last disconnected client cancels executor but one duplicate disconnect does not cancel another', async t => {
-  const gate = deferred(); let aborted = 0;
-  const f = await fixture(t, { run: ({ signal, messages }) => new Promise((resolve, reject) => { if (messages[0].content === 'shared') gate.promise.then(() => resolve('ok')); signal.addEventListener('abort', () => { aborted++; reject(Error('aborted')); }, { once: true }); }) });
+  const gate = deferred(); let aborted = 0, cancelledRuns = 0;
+  const f = await fixture(t, { run: ({ signal, messages }) => {
+    if (messages[0].content === 'cancel' && ++cancelledRuns > 1) return Promise.resolve('retried');
+    return new Promise((resolve, reject) => { if (messages[0].content === 'shared') gate.promise.then(() => resolve('ok')); signal.addEventListener('abort', () => { aborted++; reject(Error('aborted')); }, { once: true }); });
+  } });
   const controller = new AbortController();
   const one = f.post(payload('shared'), { signal: controller.signal }).catch(() => null); await until(() => f.calls() === 1);
   const two = f.post(payload('shared')); await until(() => f.bridge.status().clients === 2);
@@ -140,7 +159,8 @@ test('last disconnected client cancels executor but one duplicate disconnect doe
   gate.resolve(); assert.equal((await two).status, 200);
   const other = new AbortController(); const three = f.post(payload('cancel'), { signal: other.signal }).catch(() => null);
   await until(() => f.calls() === 2); other.abort(); await three; await until(() => aborted === 1);
-  assert.equal((await f.post(payload('cancel'))).status, 409);
+  assert.equal((await f.post(payload('cancel'), retryOptions('cancel-attempt-2'))).status, 200);
+  assert.equal(f.calls(), 3);
 });
 
 test('executor exceptions never expose error properties supplied by another module', async t => {

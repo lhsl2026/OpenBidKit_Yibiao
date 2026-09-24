@@ -97,7 +97,7 @@ Get-ScheduledTask -TaskName OpenBidKitFeishu -TaskPath '\'
 
 ## 生产切流检查
 
-先在 `.env` 中填写 `BID_PRODUCTION_CHAT_ID` 与 `BID_PRODUCTION_CHAT_IDS`，保持 `BID_DELIVERY_MODE=test` 和 `BID_PRODUCTION_CUTOVER=false`。正式群必须是当前企业自建应用可加入的内部群，并与测试群完全分离。执行只读预检：
+先在 `.env` 中填写“隆创投标决策群”的 `BID_PRODUCTION_CHAT_ID` 与 `BID_PRODUCTION_CHAT_IDS`，并把所有已退役群写入 `BID_FORBIDDEN_CHAT_IDS`；保持 `BID_DELIVERY_MODE=test` 和 `BID_PRODUCTION_CUTOVER=false`。正式群必须是当前企业自建应用可加入的内部群，并与测试群完全分离；活动、测试或正式目标命中禁止列表时服务拒绝启动。执行只读预检：
 
 ```powershell
 node --env-file-if-exists=.env ./deployment/production-check.cjs

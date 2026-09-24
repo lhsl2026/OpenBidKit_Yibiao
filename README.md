@@ -147,7 +147,7 @@
 
 ### ⬇️ 下载方式
 
-从 [GitHub Releases](https://github.com/yibiaoai/yibiao-simple/releases) 下载最新版本，运行安装包或可执行文件即可启动。
+从 [GitHub Releases](https://github.com/lhsl2026/OpenBidKit_Yibiao/releases) 下载最新版本，运行安装包或可执行文件即可启动。
 
 ### 🎬 使用方式
 

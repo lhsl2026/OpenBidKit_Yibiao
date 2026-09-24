@@ -172,6 +172,13 @@ function sourceCandidate(detail) {
     }
   });
   if (pdfs.length === 0) throw new SourceFailure('package_candidate_missing');
+  const tenderPdfs = pdfs.filter(candidate => /(?:发售版|招标文件|采购文件|磋商文件|谈判文件|询价文件)/i.test(candidate.label));
+  const noticePdfs = pdfs.filter(candidate => /(?:交易公告|采购公告|招标公告)/i.test(candidate.label));
+  if (tenderPdfs.length === 1 && tenderPdfs.length + noticePdfs.length === pdfs.length) {
+    const url = parsePackageUrl(tenderPdfs[0].href) ?? parseAnnouncementPdfUrl(tenderPdfs[0].href);
+    if (!url) throw new SourceFailure('tender_pdf_invalid');
+    return { kind: 'tender_pdf', url, label: tenderPdfs[0].label };
+  }
   if (pdfs.length !== 1) throw new SourceFailure('announcement_pdf_ambiguous');
   const url = parseAnnouncementPdfUrl(pdfs[0].href);
   if (!url) throw new SourceFailure('announcement_pdf_invalid');
@@ -248,6 +255,14 @@ function announcementFileName(value) {
   if (!/\.pdf$/i.test(filename) || filename.length > 220 || /[\\/\u0000-\u001f\u007f]/.test(filename)) return null;
   filename = filename.replace(/\.pdf$/i, '').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').replace(/[. ]+$/g, '');
   return `${filename || '采购需求'}-公告附件-非完整招标文件.pdf`;
+}
+
+function tenderPdfFileName(value) {
+  if (typeof value !== 'string') return null;
+  let filename = value.trim();
+  if (!/\.pdf$/i.test(filename) || filename.length > 220 || /[\\/\u0000-\u001f\u007f]/.test(filename)) return null;
+  filename = filename.replace(/\.pdf$/i, '').replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, '_').replace(/[. ]+$/g, '');
+  return `${filename || 'tender'}-招标文件正文.pdf`;
 }
 
 function validPdf(bytes) {
@@ -415,6 +430,31 @@ function createGuizhouSource(options = {}) {
         throw new SourceFailure('detail_response_invalid');
       }
       const candidate = sourceCandidate(detail);
+      if (candidate.kind === 'tender_pdf') {
+        const attachmentResponse = await get(candidate.url, 'application/pdf,application/octet-stream', limits.maxPdfBytes, 'tender_pdf_too_large', signal);
+        const attachmentType = contentType(attachmentResponse.response);
+        if (attachmentType && !['application/pdf', 'application/octet-stream'].includes(attachmentType)) throw new SourceFailure('tender_pdf_response_invalid');
+        if (!validPdf(attachmentResponse.bytes)) throw new SourceFailure('tender_pdf_invalid');
+        const headerName = decodeHeaderFilename(attachmentResponse.response.headers?.get?.('content-disposition'));
+        const fileName = tenderPdfFileName(headerName) ?? tenderPdfFileName(candidate.label);
+        if (!fileName) throw new SourceFailure('tender_pdf_invalid');
+        const tenderPdfSha256 = SHA256(attachmentResponse.bytes);
+        return {
+          status: 'obtained',
+          bytes: attachmentResponse.bytes,
+          fileName,
+          sha256: tenderPdfSha256,
+          sourceUrl: normalizedSourceUrl,
+          provenance: {
+            announcementUrl: normalizedSourceUrl,
+            detailUrl: detailUrl.href,
+            tenderPdfUrl: candidate.url.href,
+            tenderPdfSha256,
+            tenderProjectCode: code,
+            announcementType: type,
+          },
+        };
+      }
       if (candidate.kind === 'announcement_pdf') {
         const attachmentResponse = await get(candidate.url, 'application/pdf,application/octet-stream', limits.maxPdfBytes, 'announcement_pdf_too_large', signal);
         const attachmentType = contentType(attachmentResponse.response);

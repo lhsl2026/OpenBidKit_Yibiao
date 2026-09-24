@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 const WRITING_RESULT_PREFIX = 'FEISHU_WRITING_RESULT:';
 const allowedStages = new Set(['prepare', 'outline', 'content', 'export']);
 const allowedSourceExtensions = new Set(['.txt', '.md', '.markdown', '.docx', '.pdf', '.doc', '.wps', '.xls', '.xlsx']);
+const reviewableWarningCodes = new Set(['report_requires_review', 'five_module_run_incomplete']);
 
 function fail(code) {
   const error = new Error(code);
@@ -124,7 +125,33 @@ function renderEvidenceMarkdown(handoff) {
   return lines.join('\n');
 }
 
-function validateHandoff(handoff) {
+function allowsReviewedPlaceholderDraft(handoff, authorization, projectId) {
+  if (!isPlainObject(authorization) || authorization.type !== 'reviewed_placeholder_draft' || authorization.projectId !== projectId) return false;
+  if (handoff.status !== 'invalid' || !isPlainObject(handoff.snapshot) || !Array.isArray(handoff.warnings) || handoff.warnings.length === 0) return false;
+  const warningCodes = handoff.warnings.map((warning) => warning?.code);
+  const authorizedCodes = Array.isArray(authorization.warningCodes) ? [...authorization.warningCodes].sort() : [];
+  const completeness = Number(handoff.snapshot.completeness), confidence = Number(handoff.snapshot.confidence);
+  return Boolean(
+    warningCodes.includes('report_requires_review')
+    && warningCodes.every((code) => reviewableWarningCodes.has(code))
+    && JSON.stringify([...warningCodes].sort()) === JSON.stringify(authorizedCodes)
+    && authorization.documentVersion === String(handoff.snapshot.documentVersion ?? '')
+    && authorization.reportId === handoff.snapshot.reportId
+    && typeof handoff.snapshot.reportVersion === 'string'
+    && handoff.snapshot.reportVersion.length > 0
+    && Number.isFinite(completeness)
+    && completeness > 0
+    && completeness <= 1
+    && Number.isFinite(confidence)
+    && confidence >= 0
+    && confidence <= 1
+    && Number.isFinite(Date.parse(authorization.confirmedAt))
+    && typeof authorization.actionEventId === 'string'
+    && authorization.actionEventId.length > 0
+  );
+}
+
+function validateHandoff(handoff, authorization, projectId) {
   if (!isPlainObject(handoff)) fail('invalid_handoff');
   requiredString(handoff.schemaVersion, 'invalid_handoff_schema');
   if (!isPlainObject(handoff.task)) fail('invalid_handoff_task');
@@ -136,10 +163,11 @@ function validateHandoff(handoff) {
   const checksum = requiredString(handoff.snapshot.checksum, 'invalid_snapshot_checksum');
   const checksumMatch = /^(?:sha256:)?([a-f0-9]{64})$/i.exec(checksum);
   if (!checksumMatch) fail('invalid_snapshot_checksum');
-  if (handoff.status !== 'ready') fail('handoff_not_ready');
-  if (handoff.superseded === true || handoff.latestDocumentVersion !== documentVersion) fail('handoff_superseded');
   if (![handoff.requirements, handoff.evidence, handoff.warnings].every(Array.isArray)) fail('invalid_handoff_collections');
-  if (handoff.warnings.some((warning) => warning?.blocked === true)) fail('handoff_not_ready');
+  const reviewedPlaceholderDraft = allowsReviewedPlaceholderDraft(handoff, authorization, projectId);
+  if (handoff.status !== 'ready' && !reviewedPlaceholderDraft) fail('handoff_not_ready');
+  if (handoff.superseded === true || handoff.latestDocumentVersion !== documentVersion) fail('handoff_superseded');
+  if (handoff.warnings.some((warning) => warning?.blocked === true) && !reviewedPlaceholderDraft) fail('handoff_not_ready');
   return { documentVersion, checksum, checksumDigest: checksumMatch[1].toLowerCase() };
 }
 
@@ -151,7 +179,7 @@ function prepareWritingJob({ job, root }) {
   const stage = requiredString(job.stage, 'invalid_stage');
   if (!allowedStages.has(stage)) fail('invalid_stage');
   if (job.confirmed !== true) fail('writing_not_confirmed');
-  const { documentVersion, checksum, checksumDigest } = validateHandoff(job.handoff);
+  const { documentVersion, checksum, checksumDigest } = validateHandoff(job.handoff, job.reviewAuthorization, projectId);
   const rootPath = path.resolve(requiredString(root, 'invalid_writing_root'));
   const acquisitionRoot = path.join(rootPath, 'sources');
   const suppliedSourcePath = ensureRealFileInside(
@@ -264,6 +292,50 @@ function resolveTextModel(modelConfig) {
   return { provider, profile };
 }
 
+function readContentCheckpoint(workspace) {
+  const databasePath = path.join(workspace, 'yibiao.sqlite');
+  if (!fs.existsSync(databasePath)) return null;
+  let database;
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    database = new DatabaseSync(databasePath, { readOnly: true });
+    const task = database.prepare(`SELECT progress,stats_json
+      FROM technical_plan_tasks WHERE type='content-generation'`).get();
+    const counts = database.prepare(`SELECT status,COUNT(*) AS count
+      FROM technical_plan_content_sections GROUP BY status`).all();
+    const runtimeRow = database.prepare(`SELECT content_generation_runtime_json AS runtime
+      FROM technical_plan_meta WHERE id=1`).get();
+    const byStatus = Object.fromEntries(counts.map(row => [row.status, Number(row.count) || 0]));
+    let stats = {}, runtime = {};
+    try { stats = task?.stats_json ? JSON.parse(task.stats_json) : {}; } catch {}
+    try { runtime = runtimeRow?.runtime ? JSON.parse(runtimeRow.runtime) : {}; } catch {}
+    return {
+      progress: Math.max(0, Number(task?.progress) || 0),
+      success: byStatus.success || 0,
+      ignored: byStatus.ignored || 0,
+      total: counts.reduce((sum, row) => sum + (Number(row.count) || 0), 0),
+      phase: String(stats?.content?.phase || runtime?.phase || ''),
+      completedStages: Array.isArray(runtime?.completed_stages)
+        ? [...new Set(runtime.completed_stages.map(String))].sort()
+        : [],
+    };
+  } catch {
+    return null;
+  } finally {
+    try { database?.close(); } catch {}
+  }
+}
+
+function contentCheckpointProgressed(before, after) {
+  if (!after) return false;
+  if (!before) {
+    return after.success > 0 || after.ignored > 0 || after.progress > 0 || after.completedStages.length > 0;
+  }
+  if (after.success > before.success || after.ignored > before.ignored || after.progress > before.progress) return true;
+  const completedBefore = new Set(before.completedStages);
+  return after.completedStages.some(stage => !completedBefore.has(stage));
+}
+
 async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig, signal, timeoutMs, spawnImpl = spawn }) {
   const stage = allowedStages.has(job?.stage) ? job.stage : String(job?.stage || 'prepare');
   if (signal?.aborted) {
@@ -304,6 +376,7 @@ async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig,
   const workerPath = path.join(__dirname, 'electron-worker.cjs');
   const environment = { ...process.env, YIBIAO_FEISHU_WRITING_WORKER: '1' };
   delete environment.ELECTRON_RUN_AS_NODE;
+  const checkpointBefore = stage === 'content' ? readContentCheckpoint(prepared.workspace) : null;
 
   return new Promise((resolve) => {
     let stdout = '';
@@ -334,10 +407,19 @@ async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig,
       30 * 60 * 1000,
       Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : 30 * 60 * 1000,
     );
-    timeout = setTimeout(
-      () => stop('worker_timeout', '本轮生成达到时限，已保留完成内容，可继续生成未完成部分', 'interrupted'),
-      boundedTimeoutMs,
-    );
+    timeout = setTimeout(() => {
+      const checkpointAfter = stage === 'content' ? readContentCheckpoint(prepared.workspace) : null;
+      if (settled) return;
+      try { child.kill(); } catch {}
+      finish({
+        status: 'interrupted',
+        stage,
+        code: 'worker_timeout',
+        message: '本轮生成达到时限，已保留完成内容，可继续生成未完成部分',
+        checkpointProgressed: contentCheckpointProgressed(checkpointBefore, checkpointAfter),
+        checkpoint: { before: checkpointBefore, after: checkpointAfter },
+      });
+    }, boundedTimeoutMs);
     timeout.unref?.();
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
@@ -366,4 +448,6 @@ async function runWritingJob({ job, root, electronPath, clientRoot, modelConfig,
 module.exports = {
   prepareWritingJob,
   runWritingJob,
+  readContentCheckpoint,
+  contentCheckpointProgressed,
 };

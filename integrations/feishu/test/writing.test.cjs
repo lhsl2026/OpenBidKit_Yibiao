@@ -138,6 +138,37 @@ test('rejects unauthorized, incomplete, stale, and non-checksummed snapshots', (
   }
 });
 
+test('accepts an invalid visual-review handoff only with the matching employee placeholder authorization', (t) => {
+  const { workspaceRoot, sourcePath } = createFixture(t);
+  const job = makeJob(sourcePath);
+  job.handoff = {
+    ...job.handoff,
+    status: 'invalid',
+    snapshot: { ...job.handoff.snapshot, reportVersion: 'r3', completeness: 0.8, confidence: 0.92 },
+    warnings: [
+      { code: 'report_requires_review', blocked: true, message: '存在待人工复核页面' },
+      { code: 'five_module_run_incomplete', blocked: true, message: '五模块未全部完成' },
+    ],
+  };
+  job.reviewAuthorization = {
+    type: 'reviewed_placeholder_draft',
+    projectId: job.projectId,
+    documentVersion: 'v1',
+    reportId: 'report-v1',
+    warningCodes: ['five_module_run_incomplete', 'report_requires_review'],
+    confirmedAt: '2026-09-21T02:00:00.000Z',
+    actionEventId: 'employee-write-action',
+  };
+  const prepared = prepareWritingJob({ job, root: workspaceRoot });
+  assert.equal(prepared.status, 'ready');
+  assert.match(fs.readFileSync(prepared.evidencePath, 'utf8'), /存在待人工复核页面/);
+
+  const missingAuthorization = structuredClone(job); delete missingAuthorization.reviewAuthorization;
+  assert.throws(() => prepareWritingJob({ job: missingAuthorization, root: workspaceRoot }), /handoff_not_ready/);
+  const missingDocument = structuredClone(job); missingDocument.handoff.warnings = [{ code: 'complete_tender_document_missing', blocked: true }]; missingDocument.reviewAuthorization.warningCodes = ['complete_tender_document_missing'];
+  assert.throws(() => prepareWritingJob({ job: missingDocument, root: workspaceRoot }), /handoff_not_ready/);
+});
+
 test('accepts only a controlled local tender file and detects source changes for an existing snapshot', (t) => {
   const { root, workspaceRoot, sourcePath } = createFixture(t);
   const job = makeJob(sourcePath);
@@ -237,7 +268,70 @@ test('worker timeout is a resumable interruption because workspace checkpoints a
   });
   assert.equal(result.status, 'interrupted');
   assert.equal(result.code, 'worker_timeout');
+  assert.equal(result.checkpointProgressed, false);
   assert.match(result.message, /已保留/);
+});
+
+test('worker timeout reports durable content checkpoint progress', async (t) => {
+  const { DatabaseSync } = require('node:sqlite');
+  const { workspaceRoot, sourcePath } = createFixture(t);
+  const job = makeJob(sourcePath, { stage: 'content' });
+  const prepared = prepareWritingJob({ job, root: workspaceRoot });
+  const databasePath = path.join(prepared.workspace, 'yibiao.sqlite');
+  const database = new DatabaseSync(databasePath);
+  database.exec(`
+    CREATE TABLE technical_plan_tasks (
+      type TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL,
+      progress INTEGER NOT NULL DEFAULT 0, stats_json TEXT, error TEXT,
+      pause_requested INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE technical_plan_content_sections (
+      node_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'idle', error TEXT, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE technical_plan_meta (
+      id INTEGER PRIMARY KEY, content_generation_runtime_json TEXT
+    );
+  `);
+  const timestamp = '2026-09-22T00:00:00.000Z';
+  database.prepare(`INSERT INTO technical_plan_tasks
+    (type,task_id,status,progress,stats_json,error,pause_requested,started_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    'content-generation', 'content-progress', 'running', 10,
+    JSON.stringify({ content: { phase: 'generating' } }), null, 0, timestamp, timestamp,
+  );
+  database.prepare('INSERT INTO technical_plan_content_sections(node_id,status,error,updated_at) VALUES(?,?,?,?)')
+    .run('1.1', 'idle', null, timestamp);
+  database.prepare('INSERT INTO technical_plan_meta(id,content_generation_runtime_json) VALUES(1,?)')
+    .run(JSON.stringify({ phase: 'generating', completed_stages: [] }));
+  database.close();
+
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new PassThrough();
+  child.kill = () => true;
+  setTimeout(() => {
+    const checkpointDatabase = new DatabaseSync(databasePath);
+    checkpointDatabase.prepare("UPDATE technical_plan_content_sections SET status='success',updated_at=? WHERE node_id='1.1'").run('2026-09-22T00:00:01.000Z');
+    checkpointDatabase.prepare("UPDATE technical_plan_tasks SET progress=20,updated_at=? WHERE type='content-generation'").run('2026-09-22T00:00:01.000Z');
+    checkpointDatabase.close();
+  }, 5);
+
+  const result = await runWritingJob({
+    job,
+    root: workspaceRoot,
+    electronPath: process.execPath,
+    clientRoot: workspaceRoot,
+    modelConfig: { provider: 'custom', api_key: 'test', base_url: 'http://127.0.0.1:1/v1', model_name: 'test' },
+    timeoutMs: 30,
+    spawnImpl: () => child,
+  });
+
+  assert.equal(result.status, 'interrupted');
+  assert.equal(result.code, 'worker_timeout');
+  assert.equal(result.checkpointProgressed, true);
+  assert.equal(result.checkpoint.before.success, 0);
+  assert.equal(result.checkpoint.after.success, 1);
 });
 
 test('aborts an in-flight Electron worker and returns a bounded interrupted result', { timeout: 30_000 }, async (t) => {

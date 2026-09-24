@@ -7,6 +7,7 @@ const {promisify}=require('node:util');
 const {key}=require('./store.cjs');
 const {createAppStorage}=require('./document-recovery.cjs');
 const {recordReceipt}=require('./receipt.cjs');
+const {cardAction}=require('./card-actions.cjs');
 
 const run=promisify(execFile);
 
@@ -72,7 +73,7 @@ function matchWaitingTask({job,candidates}){
  const reply=(candidates??[]).filter(candidate=>job.replyTo&&candidate.statusCardMessageId===job.replyTo);
  if(reply.length===1)return {status:'unique',candidate:reply[0],mode:'reply'};
  if(reply.length>1)return {status:'ambiguous',candidates:reply};
- const file=matchName(job.fileName),matches=(candidates??[]).filter(candidate=>{
+ const file=matchName(job.fileName);if(!file)return {status:'none'};const matches=(candidates??[]).filter(candidate=>{
   if(typeof candidate.title!=='string'||!candidate.title.trim())return false;const title=matchName(candidate.title);return title.length>=6&&(file===title||file.includes(title)||title.includes(file));
  });
  if(matches.length===1)return {status:'unique',candidate:matches[0],mode:'title'};
@@ -85,12 +86,12 @@ function buildGroupFileStatusCard(job){
  const states={
   discovered:['已收到','blue','已收到招标文件，正在下载并校验。'],downloading:['已收到','blue','已收到招标文件，正在下载并校验。'],
   downloaded:['文件校验完成','blue','文件校验完成，正在识别项目并创建预读任务。'],ready_upload:['文件校验完成','blue','文件校验完成，正在识别项目并创建预读任务。'],uploading:['文件校验完成','blue','文件校验完成，正在识别项目并创建预读任务。'],uploaded:['文件校验完成','blue','文件校验完成，正在识别项目并创建预读任务。'],submitting:['文件校验完成','blue','文件校验完成，正在识别项目并创建预读任务。'],attaching:['文件校验完成','blue','文件校验完成，正在识别项目并创建预读任务。'],
-  waiting_selection:['请选择所属项目','yellow','发现多个待补项目，请选择该文件所属项目。'],watching:['正在预读','blue','预读任务已创建，正在解析和提取判标重点。'],completed:['已完成','green',job.canonicalJobId?'已识别为重复文件，已复用既有预读结果。':'预读已完成，请查看项目判标卡和飞书报告。'],manual_review:['需要人工核对','orange','系统无法确认本次外部操作结果，请联系管理员核对后再处理。'],failed:['处理失败','red','文件处理失败，请按下方建议处理。']
+  waiting_selection:['请选择所属项目','yellow','发现多个待补项目，请选择该文件所属项目。'],reconciling:['正在核对接收结果','blue','文件已提交，正在确认预读端是否已接收；期间不会重复提交。'],watching:['正在预读','blue','预读任务已创建，正在解析和提取判标重点。'],completed:['已完成','green',job.canonicalJobId?'已识别为重复文件，已复用既有预读结果。':'预读已完成，请查看项目判标卡和飞书报告。'],manual_review:['需要人工核对','orange','系统无法确认本次外部操作结果，请联系管理员核对后再处理。'],failed:['处理失败','red','文件处理失败，请按下方建议处理。']
  };
  const [title,template,message]=states[job.stage]??states.manual_review,errors={group_file_too_large:'文件超过 30 MiB，请压缩后重新发送。',group_file_type_unsupported:'仅支持 PDF、DOC、DOCX 文件。',group_file_content_invalid:'文件内容与扩展名不一致，请导出正确文件后重新发送。',group_file_download_failed:'文件下载失败，系统稍后自动重试。',group_file_no_task:'未能建立预读任务，请联系管理员核对。'};
  const elements=[{tag:'markdown',content:`**处理状态**\n${message}`},{tag:'markdown',content:`文件：${visible(job.fileName)||'未命名文件'}`}];
  if(errors[job.errorCode])elements.push({tag:'markdown',content:`处理建议：${errors[job.errorCode]}`});
- if(job.stage==='waiting_selection')for(const candidate of (job.candidates??[]).slice(0,5))elements.push({tag:'button',text:{tag:'plain_text',content:visible(candidate.title)||'未命名项目'},type:'primary',width:'fill',behaviors:[{type:'callback',value:{agent:'openbidkit-group-file',action:'select_task',jobId:job.id,taskId:candidate.taskId,revision:job.statusRevision}}]});
+ if(job.stage==='waiting_selection')for(const candidate of (job.candidates??[]).slice(0,5))elements.push({tag:'button',text:{tag:'plain_text',content:visible(candidate.title)||'未命名项目'},type:'primary',width:'fill',behaviors:[{type:'callback',value:cardAction('preread.select_task',{jobId:job.id,taskId:candidate.taskId,revision:job.statusRevision})}]});
  if(job.stage==='waiting_selection'&&(job.candidates??[]).length>5)elements.push({tag:'markdown',content:'候选项目超过 5 个，请联系管理员核对。'});
  return {schema:'2.0',config:{update_multi:true,width_mode:'default',enable_forward:false},header:{title:{tag:'plain_text',content:`${title}｜${visible(job.fileName)||'招标文件'}`},template},body:{direction:'vertical',vertical_spacing:'12px',padding:'12px',elements}};
 }
@@ -128,7 +129,7 @@ function createGroupFileSource({store,config,clock=Date.now,assertOwnership=()=>
   const id=key('group-file',normalized.chatId,normalized.messageId),existing=store.getGroupFileJob(id),job=store.receiveGroupFile({...normalized,id,companyId:config.companyId},clock());if(!existing)store.enqueueGroupFileStatus(job.id,buildGroupFileStatusCard(job),clock());return job;
  }
  const queueStatus=job=>{const latest=store.db.prepare('SELECT revision FROM group_file_status_outbox WHERE job_id=? ORDER BY revision DESC LIMIT 1').get(job.id),revision=latest?job.statusRevision+1:job.statusRevision;return store.enqueueGroupFileStatus(job.id,buildGroupFileStatusCard({...job,statusRevision:revision}),clock());};
- const update=(job,patch)=>store.transaction(()=>{const next=store.updateGroupFileJob(job.id,job.stage,patch,clock());queueStatus(next);return next;});
+ const update=(job,patch,after)=>store.transaction(()=>{const next=store.updateGroupFileJob(job.id,job.stage,patch,clock());queueStatus(next);if(after)after(next);return next;});
  async function poll(){
   if(!options.enabled||running||signal?.aborted)return;running=true;
   try{
@@ -148,7 +149,8 @@ function createGroupFileSource({store,config,clock=Date.now,assertOwnership=()=>
   const own=()=>{assertOwnership();if(signal?.aborted||tickSignal?.aborted)throw Error('group_file_source_stopped');};
   try{
    own();const job=store.listGroupFileJobs(clock())[0];if(!job)return;
-   if(['uploading','attaching'].includes(job.stage)){update(job,{stage:'manual_review',errorCode:job.stage==='uploading'?'group_file_upload_unknown':'group_file_attach_unknown'});return;}
+   if(job.stage==='uploading'){update(job,{stage:'manual_review',errorCode:'group_file_upload_unknown'});return;}
+   if(job.stage==='attaching'){update(job,{stage:'reconciling',errorCode:'group_file_attach_pending',nextAt:clock()});return;}
    if(job.stage==='submitting'){update(job,{stage:'uploaded',errorCode:'group_file_submit_unknown',nextAt:clock()+60000});return;}
    if(job.stage==='discovered'||job.stage==='downloading'){
     const active=job.stage==='discovered'?update(job,{stage:'downloading',errorCode:null}):job;let result;
@@ -165,6 +167,16 @@ function createGroupFileSource({store,config,clock=Date.now,assertOwnership=()=>
     update(job,{stage:'ready_upload',matchMode:'new',candidates:null,errorCode:null});return;
    }
    if(job.stage==='waiting_selection')return;
+   if(job.stage==='reconciling'){
+    let response;
+    try{response=await preread.reconcileManualDocument(job.taskId,job.sha256);own();}
+    catch{own();response=null;}
+    if(response?.status==='attached'){
+     const watch=store.getWatch(job.taskId);store.watch(job.taskId,{...(watch?.payload??{}),companyId:config.companyId,sourceGroupFileId:job.id,sourcePath:job.sourcePath,sourceChecksum:job.sha256});update(job,{stage:'watching',receipt:{reconciliation:response},errorCode:null,nextAt:clock()+60000,attempts:job.attempts});return;
+    }
+    if(job.attempts>=34){update(job,{stage:'manual_review',errorCode:'group_file_attach_unknown',attempts:job.attempts+1});return;}
+    update(job,{stage:'reconciling',errorCode:'group_file_attach_pending',nextAt:clock()+60000,attempts:job.attempts+1});return;
+   }
    if(job.stage==='ready_upload'){
     const active=update(job,{stage:'uploading',errorCode:null});let uploaded;
     try{fileStorage??=createAppStorage(options);uploaded=await fileStorage.upload({sourcePath:active.sourcePath,signal:tickSignal??signal});own();}
@@ -180,22 +192,28 @@ function createGroupFileSource({store,config,clock=Date.now,assertOwnership=()=>
     if(job.taskId&&job.manualActionId){
      const active=update(job,{stage:'attaching',errorCode:null});let response;
      try{response=await preread.attachManualDocument(job.taskId,{chatId:job.chatId,manualActionId:job.manualActionId,actorId:job.senderId,candidate:{url:signedUrl,fileName:job.fileName,officialCategory:'tender_document'}});own();}
-     catch{own();update(active,{stage:'manual_review',errorCode:'group_file_attach_unknown'});return;}
+     catch{own();update(active,{stage:'reconciling',errorCode:'group_file_attach_pending',nextAt:clock()+60000});return;}
      if(!['acquired','duplicate'].includes(response?.acquisition?.status)){update(active,{stage:'manual_review',receipt:response,errorCode:'group_file_attach_unknown'});return;}
-     store.watch(job.taskId,{companyId:config.companyId,sourceGroupFileId:job.id});update(active,{stage:'watching',receipt:response,errorCode:null,nextAt:clock()+60000});return;
+     const watch=store.getWatch(job.taskId);store.watch(job.taskId,{...(watch?.payload??{}),companyId:config.companyId,sourceGroupFileId:job.id,sourcePath:job.sourcePath,sourceChecksum:job.sha256});update(active,{stage:'watching',receipt:response,errorCode:null,nextAt:clock()+60000});return;
     }
     const active=update(job,{stage:'submitting',errorCode:null});let response;
-    try{response=await preread.receiveGroupFile({eventId:'openbidkit-group-file-'+job.id,chatId:job.chatId,messageId:job.messageId,createTime:job.createTime,senderId:job.senderId,candidate:{url:signedUrl,fileName:job.fileName}});own();}
+    try{response=await preread.receiveGroupFile({eventId:'openbidkit-group-file-'+job.id,chatId:job.chatId,messageId:job.messageId,createTime:job.createTime,senderId:job.senderId,candidate:{url:signedUrl,fileName:job.fileName,sha256:job.sha256}});own();}
     catch{own();update(active,{stage:'uploaded',errorCode:'group_file_submit_unknown',nextAt:clock()+60000,attempts:job.attempts+1});return;}
     let inspected;try{inspected=recordReceipt({store,inboxId:'group-file:'+job.id,sourceInboxId:'group-file:'+job.id,response,companyId:config.companyId,now:clock(),onReceipt});}
     catch{update(active,{stage:'manual_review',receipt:response,errorCode:'group_file_receipt_invalid'});return;}
     if(inspected.pending){update(active,{stage:'uploaded',receipt:response,errorCode:null,nextAt:clock()+60000});return;}
     const taskId=inspected.taskIds[0];if(!taskId){update(active,{stage:'failed',receipt:response,errorCode:'group_file_no_task'});return;}
-    const watch=store.getWatch(taskId);store.watch(taskId,{...(watch?.payload??{}),companyId:config.companyId,sourceGroupFileId:job.id});update(active,{stage:'watching',taskId,receipt:response,errorCode:null,nextAt:clock()+60000});return;
+    const watch=store.getWatch(taskId);store.watch(taskId,{...(watch?.payload??{}),companyId:config.companyId,sourceGroupFileId:job.id,sourcePath:job.sourcePath,sourceChecksum:job.sha256});update(active,{stage:'watching',taskId,receipt:response,errorCode:null,nextAt:clock()+60000});return;
    }
    if(job.stage==='watching'){
     if(job.canonicalJobId){const canonical=store.getGroupFileJob(job.canonicalJobId);if(!canonical){update(job,{stage:'manual_review',errorCode:'group_file_canonical_missing'});return;}if(['completed','failed','manual_review'].includes(canonical.stage)){update(job,{stage:canonical.stage,taskId:canonical.taskId,errorCode:canonical.errorCode});return;}update(job,{stage:'watching',taskId:canonical.taskId,nextAt:clock()+60000});return;}
-    if(job.taskId&&store.current(job.taskId,config.companyId)){update(job,{stage:'completed',errorCode:null});return;}
+    if(job.taskId){
+     const project=store.current(job.taskId,config.companyId),fileTime=Number(job.createTime);
+     if(project){
+      const stream=store.getCardStream(project.taskId,project.companyId,job.chatId),bindingTime=Number(stream?.first_attempt??project.created),bindingMatches=!stream||stream.message_id===project.messageId;
+      update(job,{stage:'completed',errorCode:null},()=>{if(project.messageId&&bindingMatches&&Number.isFinite(fileTime)&&Number.isFinite(bindingTime)&&bindingTime<fileTime)store.scheduleCardRebind({sourceJobId:job.id,projectId:project.id,chatId:job.chatId,now:clock()});});return;
+     }
+    }
     update(job,{stage:'watching',nextAt:clock()+60000});return;
    }
    update(job,{stage:'manual_review',errorCode:'group_file_stage_invalid'});

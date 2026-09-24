@@ -8,16 +8,34 @@ const READY='[event] ready event_key='+EVENT;
 // Project at the trusted CLI boundary: delayed-update tokens and original card bodies never enter our cache.
 const PROJECTION='{type,event_id,operator_id,chat_id,message_id,host,action_tag,action_name,action_value,form_value}';
 const text=(v,max=256)=>typeof v==='string'&&v.length>0&&v.length<=max;
+const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+function companyIdentity(value){
+ if(!text(value,4096)||!value.startsWith('company-match:'))return null;let decoded;
+ try{decoded=JSON.parse(Buffer.from(value.slice('company-match:'.length),'base64url').toString('utf8'));}catch{return null;}
+ const keys=['projectId','version','cardKey','taskId','runId','documentVersion','companyId','companyProfileVersion','scopeType','scopeId','sourceCardMessageId'];
+ if(!decoded||typeof decoded!=='object'||Array.isArray(decoded)||Object.keys(decoded).some(key=>!keys.includes(key))||!text(decoded.projectId)||!text(decoded.version)||!text(decoded.cardKey)||!text(decoded.taskId)||!uuid(decoded.runId)||!Number.isInteger(decoded.documentVersion)||decoded.documentVersion<1||!text(decoded.companyId)||!text(decoded.companyProfileVersion,80)||!['group','private'].includes(decoded.scopeType)||!text(decoded.scopeId)||!/^om_[A-Za-z0-9_-]+$/.test(decoded.sourceCardMessageId??''))return null;
+ return decoded;
+}
+function prereadRaw(e){return {type:e.type,event_id:e.event_id,operator_id:e.operator_id,chat_id:e.chat_id,message_id:e.message_id,host:e.host,action_tag:e.action_tag,
+ ...(text(e.action_name)?{action_name:e.action_name}:{}),...(text(e.action_value,8192)?{action_value:e.action_value}:{}),...(text(e.form_value,16384)?{form_value:e.form_value}:{})};}
 function cliArguments(options){return ['event','consume',EVENT,'--as','bot','--profile',options.profile,'--jq',PROJECTION];}
 function normalizeCardCallback(e,config){
  if(e?.type!==EVENT||e.host!=='im_message'||e.action_tag!=='button'||e.chat_id!==config.chatId)return null;
  if(!text(e.event_id)||!text(e.message_id)||!/^om_[A-Za-z0-9_-]+$/.test(e.message_id)||!text(e.operator_id)||!text(e.chat_id))return null;
- const formName=typeof e.action_name==='string'?e.action_name.match(/^(?:selection_select_|openbidkit_selection_)([a-f0-9]{40})_([a-f0-9]{32})$/):null;
- let v;
- if(formName)v={batchKey:formName[1],challenge:formName[2],action:'selection.select'};
+  const formName=typeof e.action_name==='string'?e.action_name.match(/^(?:selection_select_|openbidkit_selection_)([a-f0-9]{40})_([a-f0-9]{32})$/):null;
+  let v;
+ if(['submit_package_selection','preread.select_packages'].includes(e.action_name))return {route:'preread_callback',value:{action:'select_packages',raw:prereadRaw(e)},event:{eventId:e.event_id,actorId:e.operator_id,chatId:e.chat_id,messageId:e.message_id}};
+ if(e.action_name==='company_match.select'){
+  if(!text(e.form_value,16384))return null;let form;try{form=JSON.parse(e.form_value);}catch{return null;}
+  if(!form||typeof form!=='object'||Array.isArray(form)||Object.keys(form).some(key=>key!=='selected_company'))return null;
+  const identity=companyIdentity(form.selected_company);if(!identity)return null;v={action:'company_match.select',...identity};
+ }else if(formName)v={batchKey:formName[1],challenge:formName[2],action:'selection.select'};
  else{if(!text(e.action_value,8192))return null;try{v=JSON.parse(e.action_value);}catch{return null;}}
- const context={eventId:e.event_id,actorId:e.operator_id,chatId:e.chat_id,messageId:e.message_id};
- const descriptor=normalizeCardAction(v);if(!descriptor)return null;
+  const context={eventId:e.event_id,actorId:e.operator_id,chatId:e.chat_id,messageId:e.message_id};
+  const descriptor=normalizeCardAction(v);if(!descriptor)return null;
+ if(descriptor.route==='preread_callback'){
+  return {route:descriptor.route,value:{action:descriptor.action,raw:prereadRaw(e)},event:context};
+ }
  if(descriptor.route==='preread'){
   if(!/^[a-f0-9]{40}$/.test(v.jobId??'')||!text(v.taskId)||!Number.isInteger(v.revision)||v.revision<1)return null;
   return {route:descriptor.route,value:{agent:descriptor.agent,action:descriptor.action,jobId:v.jobId,taskId:v.taskId,revision:v.revision},event:context};
@@ -35,7 +53,14 @@ function normalizeCardCallback(e,config){
   if(descriptor.action==='select'&&!form.events.length)return null;
   return {route:descriptor.route,value:{agent:descriptor.agent,batchKey:v.batchKey,challenge:v.challenge,action:descriptor.action},event:{...context,formValue:{events:[...new Set(form.events)]}}};
  }
- if(!['company_match','writing','workflow'].includes(descriptor.route)||!config.operatorIds?.includes(e.operator_id)||!text(v.projectId)||!text(v.version)||!text(v.cardKey))return null;
+ if(!['company_match','writing','workflow'].includes(descriptor.route)||!text(v.projectId)||!text(v.version)||!text(v.cardKey))return null;
+ if(descriptor.route==='company_match'&&['select','review'].includes(descriptor.action)){
+  if(!text(v.taskId)||!uuid(v.runId)||!Number.isInteger(v.documentVersion)||v.documentVersion<1||!text(v.companyId)||!text(v.companyProfileVersion,80)||!['group','private'].includes(v.scopeType)||!text(v.scopeId)||v.sourceCardMessageId!==e.message_id)return null;
+  if((v.scopeType==='group'&&v.scopeId!==e.chat_id)||(v.scopeType==='private'&&v.scopeId!==e.operator_id))return null;
+  if(v.scopeType==='private'&&!config.operatorIds?.includes(e.operator_id))return null;
+  return {route:descriptor.route,value:{agent:descriptor.agent,action:descriptor.action,projectId:v.projectId,version:v.version,cardKey:v.cardKey,taskId:v.taskId,runId:v.runId,documentVersion:v.documentVersion,companyId:v.companyId,companyProfileVersion:v.companyProfileVersion,scopeType:v.scopeType,scopeId:v.scopeId,sourceCardMessageId:v.sourceCardMessageId},event:context};
+ }
+ if(!config.operatorIds?.includes(e.operator_id))return null;
  if(descriptor.action==='continue'&&!text(v.challenge))return null;
  if(descriptor.action==='page'&&(!Number.isInteger(v.page)||v.page<0))return null;
  return {route:descriptor.route,value:{agent:descriptor.agent,projectId:v.projectId,version:v.version,cardKey:v.cardKey,action:descriptor.action,

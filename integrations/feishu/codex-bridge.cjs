@@ -21,6 +21,14 @@ const failure = (status, code) => Object.assign(new Error(code), { status, code,
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, allowed) => Object.keys(value).every(key => allowed.includes(key));
 
+function normalizeRetryAttempt(value) {
+  if (value === undefined) return '';
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(value)) {
+    throw failure(400, 'invalid_request_attempt');
+  }
+  return value;
+}
+
 function contentIssue(content, responseFormat) {
   if (typeof content !== 'string' || !content.trim() || Buffer.byteLength(content, 'utf8') > MAX_RESPONSE_BYTES) return 'invalid_model_response';
   if (responseFormat?.type === 'json_object') {
@@ -54,11 +62,13 @@ function normalize(body, models) {
 
 function createCodexBridge({ config, executor, store, assertOwnership = () => {}, clock = Date.now }) {
   const options = { host: '127.0.0.1', port: 4383, timeoutMs: 300000, maxRequestBytes: 1024 * 1024, ...config.codexBridge };
+  options.requestTimeoutMs ??= options.timeoutMs;
   const models = [...new Set([...(options.models || []), options.model])];
   const recommendedModel = options.recommendedModel || options.model;
   if (options.enabled && (options.host !== '127.0.0.1' || typeof options.apiKey !== 'string' || options.apiKey.length < 32
     || typeof options.model !== 'string' || !options.model.trim() || !Number.isInteger(options.port) || options.port < 0 || options.port > 65535
-    || !Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || !Number.isInteger(options.maxRequestBytes) || options.maxRequestBytes <= 0)) throw failure(500, 'bridge_config_invalid');
+    || !Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || !Number.isInteger(options.requestTimeoutMs) || options.requestTimeoutMs < options.timeoutMs
+    || !Number.isInteger(options.maxRequestBytes) || options.maxRequestBytes <= 0)) throw failure(500, 'bridge_config_invalid');
   if (options.enabled && (!models.includes(recommendedModel) || models.some(model => typeof model !== 'string' || !/^[A-Za-z0-9._-]{1,128}$/.test(model)))) throw failure(500, 'bridge_config_invalid');
   const expectedAuth = hash('Bearer ' + options.apiKey);
   const jobs = new Map(), queue = [], executions = new Set();
@@ -136,6 +146,7 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
     const job = queue.shift(); if (!job) return;
     if (job.settled) { pump(); return; }
     active = job;
+    job.timer = setTimeout(() => cancel(job, failure(504, 'execution_timeout')), options.requestTimeoutMs);
     const execution = (async () => {
       try {
         owned();
@@ -184,7 +195,6 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
     const job = { hash: requestHash, payload, promise, resolve, reject, controller: new AbortController(), createdAt: clock(), clients: 0, settled: false };
     persist(job, { state: 'running', createdAt: job.createdAt, updatedAt: clock() });
     jobs.set(requestHash, job); queue.push(job);
-    job.timer = setTimeout(() => cancel(job, failure(504, 'execution_timeout')), options.timeoutMs);
     queueMicrotask(pump);
     return job;
   }
@@ -225,13 +235,19 @@ function createCodexBridge({ config, executor, store, assertOwnership = () => {}
       owned(); if (closed) throw failure(503, 'bridge_closed');
       if (response.destroyed || request.aborted) return;
       const payload = normalize(body, models);
-      job = getJob(scoped ? { ...payload, attemptScope: scoped[1] } : payload, cacheOnly); job.clients++;
+      const retryAttempt = normalizeRetryAttempt(request.headers['x-yibiao-request-attempt']);
+      const requestPayload = scoped
+        ? { ...payload, attemptScope: scoped[1] }
+        : retryAttempt
+          ? { ...payload, retryAttempt }
+          : payload;
+      job = getJob(requestPayload, cacheOnly); job.clients++;
       const result = await job.promise;
       completion(response, result, body.stream === true, payload.model);
     } catch (error) { respondError(response, error); }
     finally { release(); }
   });
-  server.requestTimeout = Math.max(options.timeoutMs, 30000);
+  server.requestTimeout = Math.max(options.requestTimeoutMs, 30000);
 
   async function start() {
     if (!options.enabled || started) return;
