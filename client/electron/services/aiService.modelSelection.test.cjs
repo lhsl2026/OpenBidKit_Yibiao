@@ -153,6 +153,51 @@ test('a fenced local bridge failure retries with a distinct bounded attempt head
   assert.match(attempts[1], /^[A-Za-z0-9._:-]{1,128}$/);
 });
 
+test('a network retry reuses the same bridge identity after a completed response is lost', async t => {
+  const { createServer } = require('node:http');
+  const attempts = [];
+  const completions = new Map();
+  let executions = 0;
+  let loseFirstResponse = true;
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks).toString('utf8');
+    const retryAttempt = req.headers['x-yibiao-request-attempt'] || '';
+    attempts.push(retryAttempt);
+    const identity = JSON.stringify({ body, retryAttempt });
+    if (!completions.has(identity)) {
+      executions += 1;
+      completions.set(identity, `result-${executions}`);
+    }
+    if (loseFirstResponse) {
+      loseFirstResponse = false;
+      req.socket.destroy();
+      return;
+    }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: completions.get(identity) } }] }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+
+  const config = {
+    text_model_provider: 'custom',
+    api_key: 'codex-key',
+    base_url: `http://127.0.0.1:${server.address().port}/v1`,
+    model_name: 'gpt-5.6-terra',
+    concurrency_limit: 1,
+    request_mode: 'normal',
+    image_model: { concurrency_limit: 1 },
+    text_model_profiles: {},
+  };
+  const service = createAiService({ app: {}, configStore: { load: () => config } });
+
+  assert.equal(await service.chat({ messages: [{ role: 'user', content: 'recover cached result' }] }), 'result-1');
+  assert.equal(executions, 1);
+  assert.deepEqual(attempts, ['', '']);
+});
+
 test('local Codex agent requests preserve Pi tools through the bridge-safe tool protocol', async t => {
   const { createServer } = require('node:http');
   const receivedBodies = [];

@@ -256,7 +256,7 @@ test('a scheduled project card rebind creates one new active card, retires the o
  const assessment={decision:'review',blockers:[],actions:[],items:[]};
  store.saveProject({id:'project',taskId:'task',companyId:'company',version:'1',checksum:'a'.repeat(64),generatedAt:'2026-09-18T01:00:00Z',input,assessment,messageId:'om_old',created:now-1000,revision:1});
  store.transaction(()=>store.scheduleCardRebind({sourceJobId:'group-job',projectId:'project',chatId:'formal',now}));
- const calls=[];const client={sendCard:async(chat,card,uuid)=>{calls.push({kind:'send',chat,card,uuid});return'om_new';},updateCard:async(messageId,card)=>calls.push({kind:'update',messageId,card})};
+ const calls=[];const client={getMessages:async ids=>ids.map(messageId=>({messageId,chatId:'formal',messageType:'interactive',content:'{}',deleted:false})),sendCard:async(chat,card,uuid)=>{calls.push({kind:'send',chat,card,uuid});return'om_new';},updateCard:async(messageId,card)=>calls.push({kind:'update',messageId,card})};
  await deliverOutbox({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],clock:()=>now});
  assert.equal(calls.filter(call=>call.kind==='send').length,1);assert.deepEqual(calls.filter(call=>call.kind==='update').map(call=>call.messageId),['om_new','om_old']);
  const activeCard=calls.find(call=>call.kind==='update'&&call.messageId==='om_new').card,reviewButton=activeCard.body.elements.flatMap(element=>element.columns?.[0]?.elements??[]).find(element=>element.text?.content==='查看公司匹配复核');
@@ -269,12 +269,31 @@ test('a scheduled project card rebind creates one new active card, retires the o
  assert.equal(workflow.act({...base,messageId:'om_new',eventId:'new'}).status,'follow');
 });
 
+test('a scheduled project card rebind refuses an old card that belongs to a forbidden chat',async t=>{
+ const store=createStore(':memory:');t.after(()=>store.close());const now=Date.parse('2026-09-21T03:30:00Z');
+ const input={companyId:'company',handoff:{task:{taskId:'task',title:'项目'},requirements:[]},companyMatchCard:{taskId:'task',runId:'22222222-2222-4222-8222-222222222222',documentVersion:1,sourceCardMessageId:'om_old',scopeType:'group',scopeId:'formal',companies:[{companyId:'company',companyName:'甲公司',profileVersion:'profile-1',enabled:true}]}};
+ const assessment={decision:'review',blockers:[],actions:[]};
+ store.saveProject({id:'project',taskId:'task',companyId:'company',version:'1',checksum:'a'.repeat(64),generatedAt:'2026-09-18T01:00:00Z',input,assessment,messageId:'om_old',created:now-1000,revision:1});
+ store.transaction(()=>store.scheduleCardRebind({sourceJobId:'group-job',projectId:'project',chatId:'formal',now}));
+ const client={
+  getMessages:async ids=>{assert.deepEqual(ids,['om_old']);return[{messageId:'om_old',chatId:'retired',messageType:'interactive',content:'{}',deleted:false}];},
+  sendCard:async()=>assert.fail('a cross-chat old card must stop migration before sending'),
+  updateCard:async()=>assert.fail('a cross-chat old card must never be updated'),
+ };
+ await deliverOutbox({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],forbiddenChats:['retired'],clock:()=>now});
+ const outbox=store.db.prepare('SELECT delivered,last_error FROM outbox WHERE project_id=? ORDER BY revision DESC LIMIT 1').get('project');
+ const rebind=store.db.prepare('SELECT delivered FROM card_rebindings WHERE project_id=?').get('project');
+ assert.equal(outbox.delivered,-1);assert.equal(outbox.last_error,'card_scope_mismatch');
+ assert.equal(rebind.delivered,-1);
+ assert.equal(store.getProject('project').messageId,'om_old');
+});
+
 test('a card rebind retries retiring the old card without creating a second new card',async t=>{
  const store=createStore(':memory:');t.after(()=>store.close());let now=1000;
  const input={companyId:'company',handoff:{task:{taskId:'task',title:'项目'},requirements:[]}},assessment={decision:'review',blockers:[],actions:[]};
  store.saveProject({id:'project',taskId:'task',companyId:'company',version:'1',checksum:'a'.repeat(64),generatedAt:'2026-09-18T01:00:00Z',input,assessment,messageId:'om_old',created:1,revision:1});
  store.transaction(()=>store.scheduleCardRebind({sourceJobId:'group-job',projectId:'project',chatId:'formal',now}));
- let sends=0,oldUpdates=0;const client={sendCard:async()=>{sends++;return'om_new';},updateCard:async(messageId)=>{if(messageId==='om_old'&&oldUpdates++===0)throw Error('temporary');}};
+ let sends=0,oldUpdates=0;const client={getMessages:async ids=>ids.map(messageId=>({messageId,chatId:'formal',messageType:'interactive',content:'{}',deleted:false})),sendCard:async()=>{sends++;return'om_new';},updateCard:async(messageId)=>{if(messageId==='om_old'&&oldUpdates++===0)throw Error('temporary');}};
  await deliverOutbox({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],clock:()=>now});
  assert.equal(store.getProject('project').messageId,'om_new');assert.ok(store.getPendingCardRebind('project','formal'));
  now+=60000;await deliverOutbox({store,client,mode:'production',chatId:'formal',allowedChats:['formal'],clock:()=>now});

@@ -17,6 +17,7 @@
 - 不生成或轮换许可证/构建证明私钥。
 - 只在完整验证通过后推送；只在现有签名私钥可用后创建 `v0.1.0` 标签。
 - 正式发布仍使用 `.github/workflows/release.yml`，不绕过构建证明门禁。
+- GitHub Release 必须先通过签名预检并保持草稿，全部 GitHub 产物成功后才公开；AtomGit、R2/Gitee 镜像由仓库变量显式启用。
 
 ## Review Focus
 
@@ -165,9 +166,9 @@ git ls-remote origin refs/heads/main
 
 Expected: 本地 HEAD 与远端 main SHA 相同。
 
-- [ ] **Step 4: 验证现有签名私钥条件**
+- [ ] **Step 4: 验证现有签名私钥与 GitHub-only 发布条件**
 
-检查 GitHub Secret `YIBIAO_LICENSE_PRIVATE_KEY_JWK` 是否存在，或本机是否存在与 `client/electron/resources/license-public-key.json` 匹配的既有私钥。Expected: 只记录存在性与公钥匹配结果，不输出私钥内容。
+检查 GitHub Secret `YIBIAO_LICENSE_PRIVATE_KEY_JWK` 是否存在，或本机是否存在与 `client/electron/resources/license-public-key.json` 匹配的既有私钥；确认 Release 工作流会在缺钥时于创建 Release 前失败，GitHub Release 先创建草稿并在 Windows/macOS 产物完成后公开，AtomGit 与 R2/Gitee 镜像默认关闭。Expected: 只记录存在性与公钥匹配结果，不输出私钥内容。
 
 - [ ] **Step 5: 条件满足时创建并推送正式标签**
 

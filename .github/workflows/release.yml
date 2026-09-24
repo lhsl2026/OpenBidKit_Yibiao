@@ -15,8 +15,22 @@ permissions:
   contents: write
 
 jobs:
+  validate-release-config:
+    name: Validate Release Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require official build signing key
+        env:
+          YIBIAO_LICENSE_PRIVATE_KEY_JWK: ${{ secrets.YIBIAO_LICENSE_PRIVATE_KEY_JWK }}
+        run: |
+          if [ -z "$YIBIAO_LICENSE_PRIVATE_KEY_JWK" ]; then
+            echo "YIBIAO_LICENSE_PRIVATE_KEY_JWK is required before a public release is created."
+            exit 1
+          fi
+
   create-release:
     name: Create GitHub Release
+    needs: validate-release-config
     runs-on: ubuntu-latest
     outputs:
       is_prerelease: ${{ steps.release_type.outputs.is_prerelease }}
@@ -67,16 +81,10 @@ jobs:
           TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
           IS_PRERELEASE: ${{ steps.release_type.outputs.is_prerelease }}
         run: |
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            release_flags=(--prerelease --latest=false)
-          else
-            release_flags=(--prerelease=false --latest)
-          fi
-
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release edit "$TAG_NAME" --title "$TAG_NAME" --notes-file release_notes.md "${release_flags[@]}"
+            gh release edit "$TAG_NAME" --draft --title "$TAG_NAME" --notes-file release_notes.md
           else
-            gh release create "$TAG_NAME" --title "$TAG_NAME" --notes-file release_notes.md "${release_flags[@]}"
+            gh release create "$TAG_NAME" --draft --title "$TAG_NAME" --notes-file release_notes.md
           fi
 
   build-windows:
@@ -427,11 +435,32 @@ jobs:
           fi
           gh release upload "$TAG_NAME" "${manifests[@]}" --clobber
 
-  publish-atomgit-release:
-    name: Publish AtomGit Release
+  publish-github-release:
+    name: Publish GitHub Release
     needs:
+      - create-release
       - build-windows
       - publish-macos
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Publish completed release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
+          IS_PRERELEASE: ${{ needs.create-release.outputs.is_prerelease }}
+        run: |
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            release_flags=(--prerelease --latest=false)
+          else
+            release_flags=(--prerelease=false --latest)
+          fi
+          gh release edit "$TAG_NAME" --draft=false "${release_flags[@]}"
+
+  publish-atomgit-release:
+    name: Publish AtomGit Release
+    needs: publish-github-release
+    if: ${{ vars.ENABLE_ATOMGIT_RELEASE == 'true' }}
     runs-on: ubuntu-latest
     concurrency:
       group: atomgit-release-${{ inputs.tag_name || github.ref_name }}
@@ -476,8 +505,8 @@ jobs:
     name: Publish R2 Release
     needs:
       - create-release
-      - build-windows
-      - publish-macos
+      - publish-github-release
+    if: ${{ vars.ENABLE_R2_GITEE_RELEASE == 'true' }}
     runs-on: ubuntu-latest
 
     steps:

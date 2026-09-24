@@ -849,6 +849,11 @@ async function ensureTextAiResponseOk(response, fallbackMessage) {
   throw error;
 }
 
+function isConfirmedBridgeExecutionFailure(error) {
+  return Number(error?.status || error?.statusCode) === 409
+    && error?.aiHttpErrorDetail === 'execution_failed';
+}
+
 function appendStreamChoiceContent(choice, contentParts) {
   const deltaContent = choice?.delta?.content;
   const messageContent = choice?.message?.content;
@@ -1265,6 +1270,7 @@ async function chatWithConfig(app, config, request) {
   let errorMessage = '';
   let analyticsTracked = false;
   const timeoutMs = normalizeRequestTimeoutMs(request);
+  let retryAttempt = undefined;
 
   try {
     writeAiLog(app, config, {
@@ -1279,16 +1285,22 @@ async function chatWithConfig(app, config, request) {
     });
     let result = null;
     result = await runWithAiRetry(({ attempt }) => runWithOperationTimeout(async (signal) => {
-      const retryAttempt = attempt > 1 ? `${requestId}:${attempt}` : undefined;
       try {
-        return await requestTextAi(app, config, requestBody, { signal, requestMode, retryAttempt });
-      } catch (error) {
-        if (!request.response_format || !error.responseFormatUnsupported) {
-          throw error;
-        }
+        try {
+          return await requestTextAi(app, config, requestBody, { signal, requestMode, retryAttempt });
+        } catch (error) {
+          if (!request.response_format || !error.responseFormatUnsupported) {
+            throw error;
+          }
 
-        requestBody = createChatRequestBody(config, request, { omitResponseFormat: true, stream: requestMode === 'stream' });
-        return requestTextAi(app, config, requestBody, { signal, requestMode, retryAttempt });
+          requestBody = createChatRequestBody(config, request, { omitResponseFormat: true, stream: requestMode === 'stream' });
+          return await requestTextAi(app, config, requestBody, { signal, requestMode, retryAttempt });
+        }
+      } catch (error) {
+        if (isConfirmedBridgeExecutionFailure(error)) {
+          retryAttempt = `${requestId}:${attempt + 1}`;
+        }
+        throw error;
       }
     }, timeoutMs, request.signal));
 

@@ -114,8 +114,10 @@ async function deliverOutbox({store,client,mode,chatId,allowedChats=[],forbidden
       const card=p?cardFor(p):JSON.parse(row.payload);
       assertOwnership();
       if(rebind){
+        await assertProjectCardScope(client,rebind.old_message_id,chatId);assertOwnership();
         let activeMessageId=rebind.new_message_id;
         if(!activeMessageId){activeMessageId=await client.sendCard(chatId,card,rebind.create_id);assertOwnership();store.transaction(()=>store.activateCardRebind(rebind.id,activeMessageId));}
+        else{await assertProjectCardScope(client,activeMessageId,chatId);assertOwnership();}
         const reboundProject=revalidate(p.id);if(!reboundProject?.current)throw Error('card_rebind_project_stale');
         await client.updateCard(activeMessageId,cardFor(reboundProject));assertOwnership();
         await client.updateCard(rebind.old_message_id,buildRelocatedCard(p));assertOwnership();
@@ -136,7 +138,7 @@ async function deliverOutbox({store,client,mode,chatId,allowedChats=[],forbidden
         const current=store.db.prepare('SELECT payload FROM outbox WHERE id=? AND delivered=0').get(row.id);
         if(current?.payload===row.payload)store.sent(row.id);
       }
-    }catch(error){assertOwnership();if(error?.message==='card_scope_mismatch')store.rejectDelivery(row.id,error.message);else store.retry(row,clock(),error?.message==='card_scope_unverified'?error.message:'delivery_failed');}
+    }catch(error){assertOwnership();if(error?.message==='card_scope_mismatch'){if(rebind)store.manualCardRebind(rebind.id,clock());store.rejectDelivery(row.id,error.message);}else store.retry(row,clock(),error?.message==='card_scope_unverified'?error.message:'delivery_failed');}
   }
 }
 async function deliverGroupFileStatus({store,client,mode,chatId,allowedChats=[],clock=Date.now,assertOwnership=()=>{}}){
